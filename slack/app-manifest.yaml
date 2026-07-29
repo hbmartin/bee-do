@@ -1,0 +1,25 @@
+_metadata:
+  major_version: 1
+
+display_information:
+  name: Bee-do Capture
+  description: Delivers browser Captures to dedicated Slack Request Channels.
+  background_color: "#0b0d10"
+
+features:
+  bot_user:
+    display_name: Bee-do
+    always_online: false
+
+oauth_config:
+  scopes:
+    bot:
+      - channels:manage
+      - channels:write.invites
+      - chat:write
+      - files:write
+
+settings:
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

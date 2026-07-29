@@ -1,0 +1,29 @@
+{
+  "name": "bee-do",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.15.1",
+  "scripts": {
+    "build": "pnpm build:extension && pnpm build:worker",
+    "build:extension": "node scripts/build-extension.mjs",
+    "build:worker": "wrangler deploy --dry-run --outdir dist/worker",
+    "deploy": "pnpm typecheck && pnpm test && pnpm build:extension && wrangler deploy",
+    "dev": "wrangler dev",
+    "generate:types": "wrangler types",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "pnpm generate:types && tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.19.0",
+    "@types/chrome": "^0.2.2",
+    "esbuild": "^0.28.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.115.0"
+  }
+}
