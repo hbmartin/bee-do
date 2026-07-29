@@ -53,10 +53,7 @@ declare global {
   }
 
   window.addEventListener("error", (event) => {
-    record("uncaught", [
-      event.message,
-      `${event.filename}:${event.lineno}:${event.colno}`,
-    ]);
+    record("uncaught", [event.message, `${event.filename}:${event.lineno}:${event.colno}`]);
   });
 
   window.addEventListener("unhandledrejection", (event) => {
@@ -75,8 +72,7 @@ declare global {
         break;
       }
 
-      const testId =
-        node.getAttribute("data-testid") ?? node.getAttribute("data-test-id");
+      const testId = node.getAttribute("data-testid") ?? node.getAttribute("data-test-id");
       if (testId) {
         parts.unshift(`${part}[data-testid="${testId.slice(0, 80)}"]`);
         break;

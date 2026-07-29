@@ -13,12 +13,7 @@ export function containRect(
   imageWidth: number,
   imageHeight: number,
 ): Rect {
-  if (
-    containerWidth <= 0 ||
-    containerHeight <= 0 ||
-    imageWidth <= 0 ||
-    imageHeight <= 0
-  ) {
+  if (containerWidth <= 0 || containerHeight <= 0 || imageWidth <= 0 || imageHeight <= 0) {
     return { left: 0, top: 0, width: 0, height: 0 };
   }
 
@@ -32,11 +27,7 @@ export function containRect(
     height,
   };
 }
-export function normalizePoint(
-  clientX: number,
-  clientY: number,
-  rect: Rect,
-): Point | null {
+export function normalizePoint(clientX: number, clientY: number, rect: Rect): Point | null {
   if (!rect.width || !rect.height) return null;
   const x = (clientX - rect.left) / rect.width;
   const y = (clientY - rect.top) / rect.height;

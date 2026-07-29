@@ -25,7 +25,12 @@
   display: flex;
   color: var(--text);
   background: rgba(8, 9, 12, 0.92);
-  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font:
+    13px/1.45 -apple-system,
+    BlinkMacSystemFont,
+    "Segoe UI",
+    Roboto,
+    sans-serif;
 }
 
 .stage {
@@ -37,9 +42,12 @@
     linear-gradient(45deg, #11141a 25%, transparent 25%),
     linear-gradient(-45deg, #11141a 25%, transparent 25%),
     linear-gradient(45deg, transparent 75%, #11141a 75%),
-    linear-gradient(-45deg, transparent 75%, #11141a 75%),
-    #0d0f13;
-  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+    linear-gradient(-45deg, transparent 75%, #11141a 75%), #0d0f13;
+  background-position:
+    0 0,
+    0 8px,
+    8px -8px,
+    -8px 0;
   background-size: 16px 16px;
 }
 
@@ -84,7 +92,11 @@
   background: var(--ink);
   color: var(--text);
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.55);
-  font: 600 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font:
+    600 13px/1.4 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
   outline: none;
 }
 
@@ -107,7 +119,11 @@
   padding: 0 8px 0 4px;
   color: var(--muted);
   white-space: nowrap;
-  font: 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font:
+    11px/1 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
 }
 
 .tool,
@@ -166,7 +182,11 @@
 .eyebrow {
   margin: 0 0 7px;
   color: var(--muted);
-  font: 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font:
+    10px/1 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
   letter-spacing: 0.14em;
   text-transform: uppercase;
 }
@@ -174,13 +194,21 @@
 .route {
   margin: 0;
   word-break: break-all;
-  font: 500 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font:
+    500 13px/1.4 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
 }
 
 .meta {
   margin: 8px 0 0;
   color: var(--muted);
-  font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font:
+    11px/1.5 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
 }
 
 .capture-form {
@@ -235,7 +263,11 @@
   padding: 3px 8px;
   background: var(--raised);
   color: var(--muted);
-  font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font:
+    11px/1.4 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
 }
 
 .markup-summary small {
@@ -248,7 +280,11 @@
   padding: 0 20px 12px;
   color: var(--muted);
   word-break: break-word;
-  font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  font:
+    11px/1.5 ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    monospace;
 }
 
 .status[data-tone="bad"] {

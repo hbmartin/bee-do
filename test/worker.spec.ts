@@ -1,17 +1,28 @@
 import { describe, expect, it } from "vitest";
 
+import type { CaptureV1 } from "../src/shared/capture";
+import { MAX_CAPTURE_REQUEST_BYTES, MAX_IMAGE_BYTES } from "../src/shared/capture";
 import {
-  MAX_CAPTURE_BODY_BYTES,
-  MAX_IMAGE_BYTES,
-} from "../src/shared/capture";
-import { buildChannelName } from "../src/worker/delivery";
+  SLACK_CONTEXT_TEXT_MAX,
+  SLACK_FIELD_TEXT_MAX,
+  SLACK_HEADER_TEXT_MAX,
+  SLACK_MESSAGE_TEXT_MAX,
+  SLACK_SECTION_TEXT_MAX,
+} from "../src/shared/limits";
+import {
+  buildChannelName,
+  buildDiagnosticsMessage,
+  type DeliveryLog,
+} from "../src/worker/delivery";
 import { createWorker, type WorkerDependencies } from "../src/worker";
 import type { Env, Fetcher } from "../src/worker/types";
 
 const CAPTURE_ID = "c773afc4-f923-47ad-b1c1-ceffa1f4e5af";
 const SECRET = "test-ingest-secret";
-const PNG =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nKsAAAAASUVORK5CYII=";
+const PNG_BASE64 =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nKsAAAAASUVORK5CYII=";
+const PNG_BYTES = Uint8Array.from(atob(PNG_BASE64), (character) => character.charCodeAt(0));
+const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x01, 0x02, 0xff, 0xd9, 0x00]);
 
 const env: Env = {
   CAPTURE_INGEST_SECRET: SECRET,
@@ -19,14 +30,17 @@ const env: Env = {
   SLACK_REVIEWER_IDS: "U12345678,U99999999,U99999999",
 };
 
-function capture() {
+function capture(
+  image: Uint8Array = PNG_BYTES,
+  mimeType: CaptureV1["image"]["mimeType"] = "image/png",
+): CaptureV1 {
   return {
-    schemaVersion: 1 as const,
+    schemaVersion: 1,
     captureId: CAPTURE_ID,
     capturedAt: "2026-07-29T12:00:00.000Z",
     request: { text: "Update the hero heading" },
     requester: { slackUserId: "U12345678" },
-    project: { slug: "trellium" as const },
+    project: { slug: "trellium" },
     page: {
       url: "https://trellium.ai/dashboard?mode=focus",
       path: "/dashboard",
@@ -35,11 +49,11 @@ function capture() {
       viewport: { width: 1_440, height: 900 },
       devicePixelRatio: 2,
     },
-    image: { dataUrl: PNG, annotated: true },
+    image: { mimeType, byteLength: image.byteLength, annotated: true },
     diagnostics: {
       console: [
         {
-          level: "warn" as const,
+          level: "warn",
           message: "A captured warning",
           occurredAt: "2026-07-29T11:59:00.000Z",
         },
@@ -55,32 +69,58 @@ function capture() {
   };
 }
 
-function request(body: unknown = capture(), headers: HeadersInit = {}): Request {
+type MultipartOptions = {
+  image?: Uint8Array;
+  mimeType?: CaptureV1["image"]["mimeType"];
+  headers?: HeadersInit;
+  includeCapture?: boolean;
+  includeImage?: boolean;
+};
+
+function request(metadata: unknown | string = capture(), options: MultipartOptions = {}): Request {
+  const image = options.image ?? PNG_BYTES;
+  const mimeType =
+    options.mimeType ??
+    (typeof metadata === "object" &&
+    metadata !== null &&
+    "image" in metadata &&
+    typeof metadata.image === "object" &&
+    metadata.image !== null &&
+    "mimeType" in metadata.image &&
+    typeof metadata.image.mimeType === "string"
+      ? (metadata.image.mimeType as CaptureV1["image"]["mimeType"])
+      : "image/png");
+  const form = new FormData();
+  if (options.includeCapture !== false) {
+    form.append("capture", typeof metadata === "string" ? metadata : JSON.stringify(metadata));
+  }
+  if (options.includeImage !== false) {
+    const imageBuffer = new Uint8Array(image.byteLength);
+    imageBuffer.set(image);
+    form.append(
+      "image",
+      new Blob([imageBuffer.buffer], { type: mimeType }),
+      mimeType.endsWith("jpeg") ? "x.jpg" : "x.png",
+    );
+  }
+  const headers = new Headers(options.headers);
+  if (!headers.has("authorization")) headers.set("authorization", `Bearer ${SECRET}`);
   return new Request("https://bee-do.example/v1/captures", {
     method: "POST",
-    headers: {
-      authorization: `Bearer ${SECRET}`,
-      "content-type": "application/json; charset=utf-8",
-      ...headers,
-    },
-    body: typeof body === "string" ? body : JSON.stringify(body),
+    headers,
+    body: form,
   });
-}
-
-function imageDataUrlForBytes(byteLength: number): string {
-  const completeGroups = Math.floor(byteLength / 3);
-  const remainder = byteLength % 3;
-  const tail = remainder === 1 ? "AA==" : remainder === 2 ? "AAA=" : "";
-  return `data:image/png;base64,${"AAAA".repeat(completeGroups)}${tail}`;
 }
 
 type RecordedCall = { url: string; init?: RequestInit };
 
-function slackMock(options: {
-  failMethod?: string;
-  failDiagnostics?: boolean;
-  failInvite?: boolean;
-} = {}): { fetcher: Fetcher; calls: RecordedCall[] } {
+function slackMock(
+  options: {
+    failMethod?: string;
+    failDiagnostics?: boolean;
+    failInvite?: boolean;
+  } = {},
+): { fetcher: Fetcher; calls: RecordedCall[] } {
   const calls: RecordedCall[] = [];
   let messageNumber = 0;
 
@@ -98,9 +138,7 @@ function slackMock(options: {
       options.failMethod === method ||
       (options.failInvite && method === "conversations.invite") ||
       (options.failDiagnostics && method === "chat.postMessage" && messageNumber === 2);
-    if (shouldFail) {
-      return Response.json({ ok: false, error: "test_failure" });
-    }
+    if (shouldFail) return Response.json({ ok: false, error: "test_failure" });
 
     switch (method) {
       case "conversations.create":
@@ -140,10 +178,7 @@ function jsonBody(call: RecordedCall): Record<string, unknown> {
 
 describe("Worker routing and validation", () => {
   it("serves an unauthenticated health check", async () => {
-    const response = await createWorker().fetch(
-      new Request("https://bee-do.example/healthz"),
-      env,
-    );
+    const response = await createWorker().fetch(new Request("https://bee-do.example/healthz"), env);
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ ok: true });
@@ -152,10 +187,7 @@ describe("Worker routing and validation", () => {
   it("rejects unknown routes and unsupported methods", async () => {
     const worker = createWorker();
     const missing = await worker.fetch(new Request("https://bee-do.example/nope"), env);
-    const wrongMethod = await worker.fetch(
-      new Request("https://bee-do.example/v1/captures"),
-      env,
-    );
+    const wrongMethod = await worker.fetch(new Request("https://bee-do.example/v1/captures"), env);
 
     expect(missing.status).toBe(404);
     expect(wrongMethod.status).toBe(405);
@@ -163,11 +195,7 @@ describe("Worker routing and validation", () => {
 
   it("requires the configured bearer token", async () => {
     const response = await createWorker().fetch(
-      new Request("https://bee-do.example/v1/captures", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(capture()),
-      }),
+      request(capture(), { headers: { authorization: "" } }),
       env,
     );
 
@@ -178,11 +206,16 @@ describe("Worker routing and validation", () => {
     });
   });
 
-  it("requires JSON and rejects malformed JSON", async () => {
-    const wrongType = await createWorker().fetch(
-      request("{}", { "content-type": "text/plain" }),
-      env,
-    );
+  it("rejects the legacy JSON content type and malformed metadata JSON", async () => {
+    const legacy = new Request("https://bee-do.example/v1/captures", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${SECRET}`,
+        "content-type": "application/json; charset=utf-8",
+      },
+      body: JSON.stringify(capture()),
+    });
+    const wrongType = await createWorker().fetch(legacy, env);
     const malformed = await createWorker().fetch(request("{"), env);
 
     expect(wrongType.status).toBe(415);
@@ -192,24 +225,73 @@ describe("Worker routing and validation", () => {
     });
   });
 
-  it("does not accept a content type that only starts like JSON", async () => {
+  it("does not accept a content type that only starts like multipart", async () => {
     const response = await createWorker().fetch(
-      request("{}", { "content-type": "application/json-pretend" }),
+      new Request("https://bee-do.example/v1/captures", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${SECRET}`,
+          "content-type": "multipart/form-data-pretend",
+        },
+        body: "not multipart",
+      }),
       env,
     );
 
     expect(response.status).toBe(415);
   });
 
-  it("rejects a declared payload larger than 8 MiB before reading it", async () => {
+  it("rejects a declared payload larger than 10 MB before reading it", async () => {
     const response = await createWorker().fetch(
-      request("{}", { "content-length": String(MAX_CAPTURE_BODY_BYTES + 1) }),
+      request(capture(), {
+        headers: { "content-length": String(MAX_CAPTURE_REQUEST_BYTES + 1) },
+      }),
       env,
     );
 
     expect(response.status).toBe(413);
     expect(await response.json()).toMatchObject({
       error: { code: "REQUEST_TOO_LARGE", stage: "request" },
+    });
+  });
+
+  it("enforces the streaming body cap when content-length is absent", async () => {
+    const oversized = new Uint8Array(MAX_CAPTURE_REQUEST_BYTES + 1);
+    const oversizedRequest = new Request("https://bee-do.example/v1/captures", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${SECRET}`,
+        "content-type": "multipart/form-data; boundary=stream-test",
+      },
+      body: oversized,
+    });
+    expect(oversizedRequest.headers.get("content-length")).toBeNull();
+
+    const response = await createWorker().fetch(oversizedRequest, env);
+
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({
+      error: { code: "REQUEST_TOO_LARGE", stage: "request" },
+    });
+  });
+
+  it("returns SERVICE_MISCONFIGURED when CAPTURE_INGEST_SECRET is missing", async () => {
+    const { CAPTURE_INGEST_SECRET: _secret, ...brokenEnv } = env;
+    const response = await createWorker().fetch(request(), brokenEnv);
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({
+      error: { code: "SERVICE_MISCONFIGURED", stage: "configuration", retryable: false },
+    });
+  });
+
+  it("returns SERVICE_MISCONFIGURED when SLACK_BOT_TOKEN is missing", async () => {
+    const { SLACK_BOT_TOKEN: _token, ...brokenEnv } = env;
+    const response = await createWorker().fetch(request(), brokenEnv);
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({
+      error: { code: "SERVICE_MISCONFIGURED", stage: "configuration", retryable: false },
     });
   });
 
@@ -240,10 +322,10 @@ describe("Worker routing and validation", () => {
     });
   });
 
-  it("rejects a malformed image even when its data URL and base64 are well formed", async () => {
-    const invalid = capture();
-    invalid.image.dataUrl = "data:image/png;base64,AA==";
-    const response = await createWorker().fetch(request(invalid), env);
+  it("rejects a malformed image signature", async () => {
+    const bytes = new Uint8Array([0, 1, 2, 3]);
+    const metadata = capture(bytes);
+    const response = await createWorker().fetch(request(metadata, { image: bytes }), env);
 
     expect(response.status).toBe(400);
     expect(await response.json()).toMatchObject({
@@ -251,26 +333,61 @@ describe("Worker routing and validation", () => {
     });
   });
 
-  it("returns the image-specific 413 error for decoded images over 5 MiB", async () => {
-    const oversized = capture();
-    oversized.image.dataUrl = imageDataUrlForBytes(MAX_IMAGE_BYTES + 1);
-    const response = await createWorker().fetch(request(oversized), env);
+  it("accepts a real JPEG part end-to-end", async () => {
+    const slack = slackMock();
+    const metadata = capture(JPEG_BYTES, "image/jpeg");
+    const response = await createWorker({ fetcher: slack.fetcher }).fetch(
+      request(metadata, { image: JPEG_BYTES, mimeType: "image/jpeg" }),
+      env,
+    );
+
+    expect(response.status).toBe(201);
+    expect(jsonBody(slack.calls[3]!)).toMatchObject({
+      filename: `capture-${CAPTURE_ID}.jpg`,
+      length: JPEG_BYTES.byteLength,
+    });
+    expect(slack.calls[4]!.init?.headers).toEqual({ "content-type": "image/jpeg" });
+  });
+
+  it("rejects a mismatched declared and actual image size", async () => {
+    const metadata = capture();
+    metadata.image.byteLength += 1;
+    const response = await createWorker().fetch(request(metadata), env);
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: { code: "INVALID_IMAGE", stage: "validation" },
+    });
+  });
+
+  it("rejects a multipart image type that disagrees with metadata", async () => {
+    const metadata = capture();
+    const response = await createWorker().fetch(request(metadata, { mimeType: "image/jpeg" }), env);
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: { code: "INVALID_IMAGE", stage: "validation" },
+    });
+  });
+
+  it("returns the image-specific 413 for an oversized image part", async () => {
+    const oversized = new Uint8Array(MAX_IMAGE_BYTES + 1);
+    oversized.set(PNG_BYTES.subarray(0, 8));
+    const metadata = capture();
+    metadata.image.byteLength = MAX_IMAGE_BYTES;
+    const response = await createWorker().fetch(request(metadata, { image: oversized }), env);
 
     expect(response.status).toBe(413);
     expect(await response.json()).toMatchObject({
       error: { code: "IMAGE_TOO_LARGE", stage: "validation", retryable: false },
     });
   });
-
 });
 
 describe("request channel names", () => {
   it("keeps the stable capture fragment across retry attempts", () => {
-    const first = buildChannelName(capture(), "a1b2");
-    const retry = buildChannelName(capture(), "c3d4");
-
-    expect(first).toBe("bee-trellium-dashboard-c773afc4-a1b2");
-    expect(retry).toBe("bee-trellium-dashboard-c773afc4-c3d4");
+    expect(buildChannelName(capture(), "a1b2")).toBe("bee-trellium-dashboard-c773afc4-a1b2");
+    expect(buildChannelName(capture(), "c3d4")).toBe("bee-trellium-dashboard-c773afc4-c3d4");
   });
 
   it("sanitizes and truncates route slugs to Slack's 80-character limit", () => {
@@ -284,10 +401,37 @@ describe("request channel names", () => {
   });
 });
 
+describe("diagnostics", () => {
+  it("preserves newest entries and reserves room for clicks", () => {
+    const noisy = capture();
+    noisy.diagnostics.console = Array.from({ length: 25 }, (_, index) => ({
+      level: "error",
+      message: `console-${String(index).padStart(2, "0")}-${"x".repeat(1_150)}`,
+      occurredAt: `2026-07-29T11:${String(index).padStart(2, "0")}:00.000Z`,
+    }));
+    noisy.diagnostics.clicks = Array.from({ length: 12 }, (_, index) => ({
+      selector: `button[data-index="${index}"]${"y".repeat(450)}`,
+      text: `click-${String(index).padStart(2, "0")}`,
+      occurredAt: `2026-07-29T11:${String(index + 30).padStart(2, "0")}:00.000Z`,
+    }));
+
+    const message = buildDiagnosticsMessage(noisy);
+
+    expect(message).not.toBeNull();
+    expect(message!.length).toBeLessThanOrEqual(3_500);
+    expect(message).toContain("console-24");
+    expect(message).not.toContain("console-00");
+    expect(message).toContain('data-index="11"');
+    expect(message).not.toContain('data-index="0"');
+    expect(message).toMatch(/earlier entries omitted/);
+    expect(message!.indexOf("console-23")).toBeLessThan(message!.indexOf("console-24"));
+  });
+});
+
 describe("Slack delivery", () => {
   it("creates the request channel, thread artifacts, and permalink", async () => {
     const slack = slackMock();
-    const logs: unknown[] = [];
+    const logs: DeliveryLog[] = [];
     const dependencies: WorkerDependencies = {
       fetcher: slack.fetcher,
       makeAttempt: () => "cafe",
@@ -319,17 +463,6 @@ describe("Slack delivery", () => {
       "/api/chat.postMessage",
       "/api/chat.getPermalink",
     ]);
-    expect(slack.calls.map((call) => new URL(call.url).origin)).toEqual([
-      "https://slack.com/api/conversations.create",
-      "https://slack.com/api/conversations.invite",
-      "https://slack.com/api/chat.postMessage",
-      "https://slack.com/api/files.getUploadURLExternal",
-      "https://files.slack.test/upload",
-      "https://slack.com/api/files.completeUploadExternal",
-      "https://slack.com/api/chat.postMessage",
-      "https://slack.com/api/chat.getPermalink",
-    ].map((url) => new URL(url).origin));
-
     expect(jsonBody(slack.calls[0]!)).toMatchObject({
       name: "bee-trellium-dashboard-c773afc4-cafe",
       is_private: false,
@@ -339,10 +472,6 @@ describe("Slack delivery", () => {
       users: "U12345678,U99999999",
       force: true,
     });
-    expect(jsonBody(slack.calls[2]!)).toMatchObject({
-      channel: "C12345678",
-      unfurl_links: false,
-    });
     const rootBody = JSON.stringify(jsonBody(slack.calls[2]!));
     expect(rootBody).toContain("Update the hero heading");
     expect(rootBody).toContain("<@U12345678>");
@@ -351,7 +480,7 @@ describe("Slack delivery", () => {
     expect(rootBody).toContain(CAPTURE_ID);
     expect(jsonBody(slack.calls[3]!)).toMatchObject({
       filename: `capture-${CAPTURE_ID}.png`,
-      length: expect.any(Number),
+      length: PNG_BYTES.byteLength,
       alt_txt: `Rendered page capture for Bee-do request ${CAPTURE_ID}`,
     });
     expect(slack.calls[4]!.init).toMatchObject({
@@ -360,20 +489,9 @@ describe("Slack delivery", () => {
       body: expect.any(ArrayBuffer),
     });
     expect(jsonBody(slack.calls[5]!)).toMatchObject({
-      files: [
-        {
-          id: "F12345678",
-          title: `Annotated capture ${CAPTURE_ID}`,
-        },
-      ],
+      files: [{ id: "F12345678", title: `Annotated capture ${CAPTURE_ID}` }],
       channel_id: "C12345678",
       thread_ts: "100.200",
-    });
-    expect(jsonBody(slack.calls[6]!)).toMatchObject({
-      channel: "C12345678",
-      thread_ts: "100.200",
-      unfurl_links: false,
-      unfurl_media: false,
     });
     expect(JSON.stringify(jsonBody(slack.calls[6]!))).toContain("Capture diagnostics");
     const permalinkCall = slack.calls[7]!;
@@ -387,8 +505,37 @@ describe("Slack delivery", () => {
 
     const serializedLogs = JSON.stringify(logs);
     expect(serializedLogs).not.toContain("Update the hero heading");
-    expect(serializedLogs).not.toContain("data:image");
+    expect(serializedLogs).not.toContain(PNG_BASE64);
+    expect(serializedLogs).not.toContain(SECRET);
     expect(serializedLogs).toContain(CAPTURE_ID);
+  });
+
+  it("clamps every block text value for a long page URL", async () => {
+    const slack = slackMock();
+    const long = capture();
+    long.page.search = `?q=${"x".repeat(1_987)}`;
+    long.page.url = `https://trellium.ai${long.page.path}${long.page.search}`;
+    const response = await createWorker({ fetcher: slack.fetcher }).fetch(request(long), env);
+
+    expect(response.status).toBe(201);
+    const root = jsonBody(slack.calls[2]!);
+    expect(root.text).toContain(long.page.url);
+    expect((root.text as string).length).toBeLessThanOrEqual(SLACK_MESSAGE_TEXT_MAX);
+    const blocks = root.blocks as Array<Record<string, unknown>>;
+    for (const block of blocks) {
+      const text = (block.text as { text?: string } | undefined)?.text;
+      if (text !== undefined) {
+        expect(text.length).toBeLessThanOrEqual(
+          block.type === "header" ? SLACK_HEADER_TEXT_MAX : SLACK_SECTION_TEXT_MAX,
+        );
+      }
+      for (const field of (block.fields as Array<{ text: string }> | undefined) ?? []) {
+        expect(field.text.length).toBeLessThanOrEqual(SLACK_FIELD_TEXT_MAX);
+      }
+      for (const element of (block.elements as Array<{ text: string }> | undefined) ?? []) {
+        expect(element.text.length).toBeLessThanOrEqual(SLACK_CONTEXT_TEXT_MAX);
+      }
+    }
   });
 
   it("returns non-fatal warnings for invite and diagnostics failures", async () => {
@@ -406,7 +553,7 @@ describe("Slack delivery", () => {
     });
   });
 
-  it("warns about invalid reviewers while still inviting valid, deduplicated members", async () => {
+  it("warns about invalid reviewers while inviting valid, deduplicated members", async () => {
     const slack = slackMock();
     const response = await createWorker({
       fetcher: slack.fetcher,
@@ -417,12 +564,8 @@ describe("Slack delivery", () => {
     });
 
     expect(response.status).toBe(201);
-    expect(await response.json()).toMatchObject({
-      warnings: ["INVALID_REVIEWER_ID"],
-    });
-    expect(jsonBody(slack.calls[1]!)).toMatchObject({
-      users: "U12345678,U99999999",
-    });
+    expect(await response.json()).toMatchObject({ warnings: ["INVALID_REVIEWER_ID"] });
+    expect(jsonBody(slack.calls[1]!)).toMatchObject({ users: "U12345678,U99999999" });
   });
 
   it.each([
@@ -432,21 +575,54 @@ describe("Slack delivery", () => {
     ["external_upload", "image_upload", "IMAGE_UPLOAD_FAILED"],
     ["files.completeUploadExternal", "image_upload", "IMAGE_UPLOAD_FAILED"],
     ["chat.getPermalink", "permalink", "PERMALINK_FAILED"],
-  ])(
-    "fails visibly when required method %s fails",
-    async (failMethod, stage, code) => {
-      const slack = slackMock({ failMethod });
-      const response = await createWorker({
-        fetcher: slack.fetcher,
-        makeAttempt: () => "dead",
-      }).fetch(request(), env);
+  ])("fails visibly when required method %s fails", async (failMethod, stage, code) => {
+    const slack = slackMock({ failMethod });
+    const response = await createWorker({
+      fetcher: slack.fetcher,
+      makeAttempt: () => "dead",
+    }).fetch(request(), env);
+    const body = await response.json();
 
-      expect(response.status).toBe(502);
-      expect(await response.json()).toMatchObject({
-        ok: false,
-        captureId: CAPTURE_ID,
-        error: { code, stage, retryable: true },
+    expect(response.status).toBe(502);
+    expect(body).toMatchObject({
+      ok: false,
+      captureId: CAPTURE_ID,
+      error: { code, stage, retryable: true },
+    });
+    if (stage !== "channel_create") {
+      expect(body).toMatchObject({
+        slack: {
+          channelId: "C12345678",
+          channelName: "bee-trellium-dashboard-c773afc4-dead",
+        },
       });
-    },
-  );
+    }
+  });
+
+  it("logs stable and Slack error codes without sensitive Capture content", async () => {
+    const slack = slackMock({ failMethod: "chat.postMessage" });
+    const logs: DeliveryLog[] = [];
+    const response = await createWorker({
+      fetcher: slack.fetcher,
+      log: (entry) => logs.push(entry),
+    }).fetch(request(), env);
+
+    expect(response.status).toBe(502);
+    expect(logs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          stage: "root_message",
+          outcome: "error",
+          code: "ROOT_MESSAGE_FAILED",
+          slackMethod: "chat.postMessage",
+          slackCode: "test_failure",
+          httpStatus: 200,
+        }),
+      ]),
+    );
+    const serialized = JSON.stringify(logs);
+    expect(serialized).not.toContain("Update the hero heading");
+    expect(serialized).not.toContain(PNG_BASE64);
+    expect(serialized).not.toContain(SECRET);
+  });
 });

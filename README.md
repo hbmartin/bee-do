@@ -15,7 +15,7 @@ Domain terminology shared by this repository is defined in [CONTEXT.md](./CONTEX
 
 ## Capture API
 
-The extension sends `POST /v1/captures` with `Content-Type: application/json` and `Authorization: Bearer <pilot-secret>`. The shared TypeScript/Zod contract is versioned as:
+The extension sends `POST /v1/captures` as `multipart/form-data` with `Authorization: Bearer <pilot-secret>`. The browser supplies the multipart boundary. The request contains a `capture` JSON metadata part and an `image` file part whose content type is `image/png` or `image/jpeg`. The shared TypeScript/Zod metadata contract is versioned as:
 
 ```ts
 type CaptureV1 = {
@@ -34,8 +34,11 @@ type CaptureV1 = {
     devicePixelRatio: number;
   };
   image: {
-    dataUrl: `data:image/${"png" | "jpeg"};base64,${string}`;
+    mimeType: "image/png" | "image/jpeg";
+    byteLength: number;
     annotated: boolean;
+    scale?: number;
+    quality?: number;
   };
   diagnostics: {
     console: Array<{ level: string; message: string; occurredAt: string }>;
@@ -60,12 +63,16 @@ A successful Delivery returns HTTP `201`:
 }
 ```
 
-Failures return a non-2xx status with a stable machine code, failed stage, safe message, and retry guidance:
+Failures return a non-2xx status with a stable machine code, failed stage, safe message, and retry guidance. If a required stage fails after channel creation, `slack` identifies the orphaned channel for manual cleanup:
 
 ```json
 {
   "ok": false,
   "captureId": "…",
+  "slack": {
+    "channelId": "C…",
+    "channelName": "bee-trellium-dashboard-1234abcd-a1b2"
+  },
   "error": {
     "code": "IMAGE_UPLOAD_FAILED",
     "stage": "image_upload",
@@ -75,7 +82,7 @@ Failures return a non-2xx status with a stable machine code, failed stage, safe 
 }
 ```
 
-`GET /healthz` is unauthenticated. Every other route or method is rejected. The Worker applies an 8 MiB request-body cap and validates the decoded image at a 5 MiB cap before creating anything in Slack.
+`GET /healthz` is unauthenticated. Every other route or method is rejected. The Worker caps the complete multipart request at 10,000,000 bytes, the raw image part at 9,000,000 bytes, and Capture metadata at 256,000 bytes before creating anything in Slack.
 
 ## Prerequisites
 
@@ -97,12 +104,12 @@ pnpm generate:types
 
 The portable app definition lives at [`slack/app-manifest.yaml`](./slack/app-manifest.yaml). It grants the Bee-do bot only these scopes:
 
-| Scope | Used for |
-| --- | --- |
-| `channels:manage` | Create one public Request Channel per Capture |
+| Scope                    | Used for                                      |
+| ------------------------ | --------------------------------------------- |
+| `channels:manage`        | Create one public Request Channel per Capture |
 | `channels:write.invites` | Invite the requester and configured reviewers |
-| `chat:write` | Publish the root summary and diagnostics |
-| `files:write` | Upload the rendered screenshot |
+| `chat:write`             | Publish the root summary and diagnostics      |
+| `files:write`            | Upload the rendered screenshot                |
 
 1. In [Slack API apps](https://api.slack.com/apps), choose **Create New App** → **From an app manifest**.
 2. Select the pilot workspace, paste or upload `slack/app-manifest.yaml`, and create the app.
@@ -189,10 +196,14 @@ Send the Capture. On success, use **Open Slack** to visit the root message or **
 Run the complete local verification set before a deployment:
 
 ```bash
-pnpm typecheck
-pnpm test
+pnpm lint
+pnpm format:check
+pnpm check
+pnpm test:coverage
 pnpm build
 ```
+
+Use `pnpm format` to apply oxfmt and `pnpm lint:fix` for safe oxlint fixes.
 
 M0 is complete only after an owner-operated smoke test from an approved page. Use a non-empty request, one pen stroke, and one text label, then confirm:
 
@@ -208,7 +219,7 @@ M0 is complete only after an owner-operated smoke test from an approved page. Us
 - Captures are stateless. A retry can create a duplicate or leave a partial Request Channel; the shared Capture ID is the correlation key.
 - Request Channels are public and cleanup is manual.
 - Only the visible viewport is captured. The rendered, annotated image is delivered; an unmarked baseline is not retained.
-- The application accepts at most 8 MiB of JSON and 5 MiB of decoded image data. The extension downscales and converts oversized PNGs to JPEG before submission.
+- The application accepts at most 10,000,000 bytes of multipart data, including at most 9,000,000 raw image bytes and 256,000 metadata bytes. The extension tries JPEG quality reductions before downscaling to an 800px-wide floor.
 - Console history is limited to 25 entries and click history to 12 entries, collected only after the extension collector loads.
 - The only Project in M0 is `trellium`, derived from the approved page origin rather than selected by the requester.
 - There is no D1, R2, CI deployment, automated browser suite, real-Slack CI, Slack interactivity, or channel auto-archival in this milestone.

@@ -1,3 +1,5 @@
+import { lockStorage } from "./storage";
+
 type Settings = {
   endpoint: string;
   secret: string;
@@ -18,11 +20,9 @@ function input(id: (typeof fields)[number]): HTMLInputElement {
 
 function validateEndpoint(value: string): URL {
   const url = new URL(value);
-  const isWorkersDev =
-    url.protocol === "https:" && url.hostname.endsWith(".workers.dev");
+  const isWorkersDev = url.protocol === "https:" && url.hostname.endsWith(".workers.dev");
   const isLocal =
-    url.protocol === "http:" &&
-    (url.hostname === "localhost" || url.hostname === "127.0.0.1");
+    url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "127.0.0.1");
 
   if (!isWorkersDev && !isLocal) {
     throw new Error("Use an HTTPS workers.dev endpoint or a local Wrangler endpoint.");
@@ -39,11 +39,16 @@ function setStatus(message: string, tone: "good" | "bad"): void {
   status.dataset.tone = tone;
 }
 
-void chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
+async function loadSettings(): Promise<void> {
+  try {
+    const stored = await chrome.storage.local.get(fields);
+    for (const field of fields) input(field).value = String(stored[field] ?? "");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "Could not load settings.", "bad");
+  }
+}
 
-void chrome.storage.local.get(fields).then((stored) => {
-  for (const field of fields) input(field).value = String(stored[field] ?? "");
-});
+void loadSettings();
 form.addEventListener("submit", (event) => {
   event.preventDefault();
   void (async () => {
@@ -75,3 +80,5 @@ form.addEventListener("submit", (event) => {
     }
   })();
 });
+
+void lockStorage();

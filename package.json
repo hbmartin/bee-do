@@ -3,15 +3,20 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@11.15.1",
   "scripts": {
     "build": "pnpm build:extension && pnpm build:worker",
     "build:extension": "node scripts/build-extension.mjs",
     "build:worker": "wrangler deploy --dry-run --outdir dist/worker",
-    "deploy": "pnpm typecheck && pnpm test && pnpm build:extension && wrangler deploy",
+    "check": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test",
+    "deploy": "pnpm check && pnpm build:extension && wrangler deploy",
     "dev": "wrangler dev",
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check .",
     "generate:types": "wrangler types",
+    "lint": "oxlint .",
+    "lint:fix": "oxlint . --fix",
     "test": "vitest run",
+    "test:coverage": "vitest run --coverage --coverage.provider=istanbul",
     "test:watch": "vitest",
     "typecheck": "pnpm generate:types && tsc --noEmit"
   },
@@ -21,9 +26,13 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.19.0",
     "@types/chrome": "^0.2.2",
+    "@vitest/coverage-istanbul": "4.1.10",
     "esbuild": "^0.28.1",
+    "oxfmt": "0.61.0",
+    "oxlint": "1.76.0",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10",
     "wrangler": "^4.115.0"
-  }
+  },
+  "packageManager": "pnpm@11.15.1"
 }

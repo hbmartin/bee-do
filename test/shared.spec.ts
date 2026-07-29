@@ -2,23 +2,20 @@ import { describe, expect, it } from "vitest";
 
 import {
   captureV1Schema,
+  type CaptureV1,
   type ClickEntry,
   type ConsoleEntry,
   MAX_IMAGE_BYTES,
   MAX_REQUEST_TEXT,
 } from "../src/shared/capture";
-import {
-  isSupportedPage,
-  resolveProject,
-  TRELLIUM_PROJECT,
-} from "../src/shared/projects";
+import { isSupportedPage, resolveProject, TRELLIUM_PROJECT } from "../src/shared/projects";
 import { buildCapture } from "../extension/src/capture";
 import { containRect, normalizePoint } from "../extension/src/geometry";
 
 const CAPTURE_ID = "c773afc4-f923-47ad-b1c1-ceffa1f4e5af";
 const CAPTURED_AT = "2026-07-29T12:00:00.000Z";
 
-function makeCapture() {
+function makeCapture(): CaptureV1 {
   return {
     schemaVersion: 1 as const,
     captureId: CAPTURE_ID,
@@ -35,7 +32,8 @@ function makeCapture() {
       devicePixelRatio: 2,
     },
     image: {
-      dataUrl: "data:image/png;base64,AA==",
+      mimeType: "image/png" as const,
+      byteLength: 68,
       annotated: true,
     },
     diagnostics: {
@@ -61,27 +59,14 @@ function makeClickEntry(index: number) {
   };
 }
 
-function imageDataUrlForBytes(
-  byteLength: number,
-  mime: "png" | "jpeg" = "png",
-): string {
-  const completeGroups = Math.floor(byteLength / 3);
-  const remainder = byteLength % 3;
-  const tail = remainder === 1 ? "AA==" : remainder === 2 ? "AAA=" : "";
-  return `data:image/${mime};base64,${"AAAA".repeat(completeGroups)}${tail}`;
-}
-
 describe("project resolution", () => {
   it("accepts the exact trellium.ai HTTPS host", () => {
-    expect(resolveProject("https://trellium.ai/path?query=1")).toBe(
-      TRELLIUM_PROJECT,
-    );
+    expect(resolveProject("https://trellium.ai/path?query=1")).toBe(TRELLIUM_PROJECT);
     expect(isSupportedPage("https://trellium.ai/path?query=1")).toBe(true);
   });
 
   it("accepts a deployment owned by hbmartins-projects", () => {
-    const url =
-      "https://feature-redesign-hbmartins-projects.vercel.app/dashboard";
+    const url = "https://feature-redesign-hbmartins-projects.vercel.app/dashboard";
 
     expect(resolveProject(url)).toBe(TRELLIUM_PROJECT);
     expect(isSupportedPage(url)).toBe(true);
@@ -205,9 +190,7 @@ describe("CaptureV1 page consistency", () => {
     expect(parsed.success).toBe(false);
     if (!parsed.success) {
       expect(parsed.error.issues).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ path: ["page"] }),
-        ]),
+        expect.arrayContaining([expect.objectContaining({ path: ["page"] })]),
       );
     }
   });
@@ -217,9 +200,7 @@ describe("CaptureV1 diagnostic limits", () => {
   it("accepts 25 console entries and 12 click entries", () => {
     const capture = makeCapture();
     capture.diagnostics = {
-      console: Array.from({ length: 25 }, (_, index) =>
-        makeConsoleEntry(index),
-      ),
+      console: Array.from({ length: 25 }, (_, index) => makeConsoleEntry(index)),
       clicks: Array.from({ length: 12 }, (_, index) => makeClickEntry(index)),
     };
 
@@ -228,53 +209,47 @@ describe("CaptureV1 diagnostic limits", () => {
 
   it("rejects a 26th console entry", () => {
     const capture = makeCapture();
-    capture.diagnostics.console = Array.from({ length: 26 }, (_, index) =>
-      makeConsoleEntry(index),
-    );
+    capture.diagnostics.console = Array.from({ length: 26 }, (_, index) => makeConsoleEntry(index));
 
     expect(captureV1Schema.safeParse(capture).success).toBe(false);
   });
 
   it("rejects a 13th click entry", () => {
     const capture = makeCapture();
-    capture.diagnostics.clicks = Array.from({ length: 13 }, (_, index) =>
-      makeClickEntry(index),
-    );
+    capture.diagnostics.clicks = Array.from({ length: 13 }, (_, index) => makeClickEntry(index));
 
     expect(captureV1Schema.safeParse(capture).success).toBe(false);
   });
 });
 
 describe("CaptureV1 image validation", () => {
-  it.each(["png", "jpeg"] as const)("accepts a valid %s data URL", (mime) => {
+  it.each(["image/png", "image/jpeg"] as const)("accepts valid %s metadata", (mimeType) => {
     const capture = makeCapture();
-    capture.image.dataUrl = imageDataUrlForBytes(1, mime);
+    capture.image.mimeType = mimeType;
 
     expect(captureV1Schema.safeParse(capture).success).toBe(true);
   });
 
-  it.each([
-    "data:image/gif;base64,AA==",
-    "data:image/png,AA==",
-    "data:image/png;base64,not base64",
-    "https://trellium.ai/image.png",
-  ])("rejects an invalid image data URL: %s", (dataUrl) => {
+  it("rejects the old data URL contract", () => {
     const capture = makeCapture();
-    capture.image.dataUrl = dataUrl;
+    const legacy = {
+      ...capture,
+      image: { dataUrl: "data:image/png;base64,AA==", annotated: true },
+    };
 
-    expect(captureV1Schema.safeParse(capture).success).toBe(false);
+    expect(captureV1Schema.safeParse(legacy).success).toBe(false);
   });
 
-  it("accepts an image exactly 5 MiB after base64 decoding", () => {
+  it("accepts an image exactly at the raw byte limit", () => {
     const capture = makeCapture();
-    capture.image.dataUrl = imageDataUrlForBytes(MAX_IMAGE_BYTES);
+    capture.image.byteLength = MAX_IMAGE_BYTES;
 
     expect(captureV1Schema.safeParse(capture).success).toBe(true);
   });
 
-  it("rejects an image one decoded byte over 5 MiB", () => {
+  it("rejects an image one byte over the raw byte limit", () => {
     const capture = makeCapture();
-    capture.image.dataUrl = imageDataUrlForBytes(MAX_IMAGE_BYTES + 1);
+    capture.image.byteLength = MAX_IMAGE_BYTES + 1;
 
     expect(captureV1Schema.safeParse(capture).success).toBe(false);
   });
