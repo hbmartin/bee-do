@@ -241,11 +241,16 @@ function validationError(
       retryable: false,
     });
   }
+  const firstIssue = issues[0];
+  const field =
+    firstIssue && firstIssue.path.length > 0 ? firstIssue.path.map(String).join(".") : undefined;
   return new WorkerError({
     code: "INVALID_CAPTURE",
     stage: "validation",
     status: 400,
-    message: "Capture payload failed validation",
+    message: field
+      ? `Capture payload failed validation at ${field}`
+      : "Capture payload failed validation",
     retryable: false,
   });
 }
