@@ -9,10 +9,7 @@ export function resolveProject(urlValue: string): typeof TRELLIUM_PROJECT | null
 
     const hostname = url.hostname.toLowerCase();
     if (hostname === "trellium.ai") return TRELLIUM_PROJECT;
-    if (
-      hostname.endsWith(VERCEL_OWNER_SUFFIX) &&
-      hostname.length > VERCEL_OWNER_SUFFIX.length
-    ) {
+    if (hostname.endsWith(VERCEL_OWNER_SUFFIX) && hostname.length > VERCEL_OWNER_SUFFIX.length) {
       return TRELLIUM_PROJECT;
     }
   } catch {

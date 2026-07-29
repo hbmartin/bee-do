@@ -1,15 +1,8 @@
-import type {
-  CaptureResponse,
-  CaptureSuccess,
-  CaptureV1,
-} from "../../src/shared/capture";
-import {
-  MAX_IMAGE_BYTES,
-  MAX_LABEL_TEXT,
-  MAX_REQUEST_TEXT,
-} from "../../src/shared/limits";
+import type { CaptureResponse, CaptureSuccess, CaptureV1 } from "../../src/shared/capture";
+import { MAX_LABEL_TEXT, MAX_REQUEST_TEXT } from "../../src/shared/limits";
 import { buildCapture } from "./capture";
 import { containRect, normalizePoint, type Point } from "./geometry";
+import { fitImageToBudget, type ImageEncodingRequest } from "./image-budget";
 
 declare global {
   interface Window {
@@ -49,17 +42,32 @@ function element<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-function decodedDataUrlBytes(dataUrl: string): number {
-  const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
-  const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
-  return Math.floor((base64.length * 3) / 4) - padding;
+function canvasBlob(canvas: HTMLCanvasElement, type: string, quality?: number): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (blob) resolve(blob);
+        else reject(new Error("This browser could not encode the screenshot."));
+      },
+      type,
+      quality,
+    );
+  });
 }
 
-function wrapLabel(
-  context: CanvasRenderingContext2D,
-  text: string,
-  maxWidth: number,
-): string[] {
+function blobDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => {
+      if (typeof reader.result === "string") resolve(reader.result);
+      else reject(new Error("This browser could not prepare the screenshot."));
+    });
+    reader.addEventListener("error", () => reject(reader.error ?? new Error("Image read failed.")));
+    reader.readAsDataURL(blob);
+  });
+}
+
+function wrapLabel(context: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
   const words = text.trim().split(/\s+/);
   const lines: string[] = [];
   let current = "";
@@ -137,12 +145,7 @@ class CaptureOverlay {
     this.shot.draggable = false;
     this.frame.append(this.shot, this.ink);
 
-    for (const button of [
-      this.penButton,
-      this.textButton,
-      this.undoButton,
-      this.clearButton,
-    ]) {
+    for (const button of [this.penButton, this.textButton, this.undoButton, this.clearButton]) {
       button.type = "button";
     }
     const cancelButton = element("button", "tool", "Cancel");
@@ -270,10 +273,7 @@ class CaptureOverlay {
       width: `${frame.width}px`,
       height: `${frame.height}px`,
     });
-    if (
-      this.ink.width !== this.shot.naturalWidth ||
-      this.ink.height !== this.shot.naturalHeight
-    ) {
+    if (this.ink.width !== this.shot.naturalWidth || this.ink.height !== this.shot.naturalHeight) {
       this.ink.width = this.shot.naturalWidth;
       this.ink.height = this.shot.naturalHeight;
     }
@@ -470,12 +470,7 @@ class CaptureOverlay {
     this.sendButton.disabled = !this.ready || !hasRequest || locked;
     this.sendButton.textContent = this.sending ? "Sending…" : "Send to Slack";
     this.requestInput.disabled = locked;
-    for (const button of [
-      this.penButton,
-      this.textButton,
-      this.undoButton,
-      this.clearButton,
-    ]) {
+    for (const button of [this.penButton, this.textButton, this.undoButton, this.clearButton]) {
       button.disabled = locked;
     }
     this.undoButton.disabled = locked || this.actions.length === 0;
@@ -485,7 +480,10 @@ class CaptureOverlay {
       : "None";
   }
 
-  private renderImage(): { dataUrl: string; annotated: boolean } {
+  private async renderImage(): Promise<{
+    dataUrl: string;
+    metadata: CaptureV1["image"];
+  }> {
     const canvas = document.createElement("canvas");
     canvas.width = this.shot.naturalWidth;
     canvas.height = this.shot.naturalHeight;
@@ -495,28 +493,30 @@ class CaptureOverlay {
     context.drawImage(this.shot, 0, 0);
     this.paintMarkup(context, canvas.width, canvas.height, this.actions);
 
-    let dataUrl = canvas.toDataURL("image/png");
-    if (decodedDataUrlBytes(dataUrl) <= MAX_IMAGE_BYTES) {
-      return { dataUrl, annotated: this.actions.length > 0 };
-    }
-
-    let working = canvas;
-    for (let attempt = 0; attempt < 7; attempt += 1) {
-      dataUrl = working.toDataURL("image/jpeg", 0.85);
-      if (decodedDataUrlBytes(dataUrl) <= MAX_IMAGE_BYTES) {
-        return { dataUrl, annotated: this.actions.length > 0 };
+    const encode = async (request: ImageEncodingRequest): Promise<Blob> => {
+      let target = canvas;
+      if (request.scale < 1) {
+        target = document.createElement("canvas");
+        target.width = Math.max(1, Math.round(canvas.width * request.scale));
+        target.height = Math.max(1, Math.round(canvas.height * request.scale));
+        const targetContext = target.getContext("2d");
+        if (!targetContext) throw new Error("This browser could not resize the screenshot.");
+        targetContext.drawImage(canvas, 0, 0, target.width, target.height);
       }
+      return canvasBlob(target, request.mimeType, request.quality);
+    };
 
-      const smaller = document.createElement("canvas");
-      smaller.width = Math.max(1, Math.floor(working.width * 0.8));
-      smaller.height = Math.max(1, Math.floor(working.height * 0.8));
-      const smallerContext = smaller.getContext("2d");
-      if (!smallerContext) break;
-      smallerContext.drawImage(working, 0, 0, smaller.width, smaller.height);
-      working = smaller;
-    }
-
-    throw new Error("The captured image is too large to send. Reduce browser zoom and retry.");
+    const result = await fitImageToBudget(canvas.width, encode);
+    return {
+      dataUrl: await blobDataUrl(result.blob),
+      metadata: {
+        mimeType: result.mimeType,
+        byteLength: result.blob.size,
+        annotated: this.actions.length > 0,
+        ...(result.scale < 1 ? { scale: result.scale } : {}),
+        ...(result.quality !== undefined ? { quality: result.quality } : {}),
+      },
+    };
   }
 
   private async submit(): Promise<void> {
@@ -527,7 +527,7 @@ class CaptureOverlay {
     this.update();
 
     try {
-      const image = this.renderImage();
+      const image = await this.renderImage();
       const capture = buildCapture(
         {
           captureId: this.payload.captureId,
@@ -538,18 +538,20 @@ class CaptureOverlay {
           diagnostics: this.payload.context.diagnostics,
         },
         this.requestInput.value,
-        image,
+        image.metadata,
       );
 
       const response = (await chrome.runtime.sendMessage({
         type: "bee-do:submit",
         capture,
+        imageDataUrl: image.dataUrl,
       })) as CaptureResponse | undefined;
 
       if (!response) throw new Error("Ingest: the extension received no response.");
       if (!response.ok) {
         const stage = response.error.stage.replaceAll("_", " ");
-        throw new Error(`${stage}: ${response.error.message}`);
+        const orphan = response.slack ? ` (#${response.slack.channelName} was created)` : "";
+        throw new Error(`${stage}: ${response.error.message}${orphan}`);
       }
       this.delivered = response;
       this.status.dataset.tone = "good";

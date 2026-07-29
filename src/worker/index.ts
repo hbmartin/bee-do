@@ -1,13 +1,18 @@
 import {
+  CAPTURE_IMAGE_PART,
+  CAPTURE_METADATA_PART,
   captureV1Schema,
-  MAX_CAPTURE_BODY_BYTES,
+  isCaptureId,
+  MAX_CAPTURE_REQUEST_BYTES,
+  MAX_IMAGE_BYTES,
+  MAX_METADATA_BYTES,
   type CaptureError,
   type CaptureResponse,
 } from "../shared/capture";
 import { publishCapture, type DeliveryDependencies, type DeliveryLog } from "./delivery";
 import { WorkerError } from "./errors";
-import { decodeCaptureImage } from "./image";
-import { SlackClient } from "./slack";
+import { validateCaptureImage } from "./image";
+import { describeSlackError, SlackClient } from "./slack";
 import type { Env, Fetcher } from "./types";
 
 export type WorkerDependencies = {
@@ -27,6 +32,7 @@ function errorResponse(error: WorkerError, captureId?: string): Response {
   const body: CaptureError = {
     ok: false,
     ...(captureId !== undefined ? { captureId } : {}),
+    ...(error.slack !== undefined ? { slack: error.slack } : {}),
     error: {
       code: error.code,
       stage: error.stage,
@@ -69,7 +75,25 @@ function authenticate(request: Request, expectedSecret: string | undefined): voi
   }
 }
 
-async function readBoundedBody(request: Request): Promise<Uint8Array> {
+function requestTooLarge(): WorkerError {
+  return new WorkerError({
+    code: "REQUEST_TOO_LARGE",
+    stage: "request",
+    status: 413,
+    message: "Capture payload exceeds the 10 MB limit",
+    retryable: false,
+  });
+}
+
+/**
+ * Rebuilds the request behind a counting stream so the size cap is enforced while the body is
+ * still arriving. `formData()` buffers everything it is given, so the limit has to sit in
+ * front of it rather than after.
+ */
+function limitBody(request: Request): {
+  request: Request;
+  overflowed: () => boolean;
+} {
   const lengthHeader = request.headers.get("content-length");
   if (lengthHeader !== null) {
     const declaredLength = Number(lengthHeader);
@@ -82,74 +106,148 @@ async function readBoundedBody(request: Request): Promise<Uint8Array> {
         retryable: false,
       });
     }
-    if (declaredLength > MAX_CAPTURE_BODY_BYTES) {
-      throw new WorkerError({
-        code: "REQUEST_TOO_LARGE",
-        stage: "request",
-        status: 413,
-        message: "Capture payload exceeds the 8 MiB limit",
-        retryable: false,
-      });
-    }
+    if (declaredLength > MAX_CAPTURE_REQUEST_BYTES) throw requestTooLarge();
   }
 
-  if (request.body === null) return new Uint8Array();
+  if (request.body === null) {
+    throw new WorkerError({
+      code: "EMPTY_BODY",
+      stage: "request",
+      status: 400,
+      message: "Capture request body is required",
+      retryable: false,
+    });
+  }
 
-  const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
   let total = 0;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > MAX_CAPTURE_BODY_BYTES) {
-      await reader.cancel();
-      throw new WorkerError({
-        code: "REQUEST_TOO_LARGE",
-        stage: "request",
-        status: 413,
-        message: "Capture payload exceeds the 8 MiB limit",
-        retryable: false,
-      });
-    }
-    chunks.push(value);
-  }
+  let overflowed = false;
+  const limiter = new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      total += chunk.byteLength;
+      if (total > MAX_CAPTURE_REQUEST_BYTES) {
+        overflowed = true;
+        controller.error(requestTooLarge());
+        return;
+      }
+      controller.enqueue(chunk);
+    },
+  });
 
-  const body = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    body.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return body;
+  return {
+    request: new Request(request.url, {
+      method: request.method,
+      headers: request.headers,
+      body: request.body.pipeThrough(limiter),
+    }),
+    overflowed: () => overflowed,
+  };
 }
 
-async function parseCapture(request: Request): Promise<unknown> {
-  const bytes = await readBoundedBody(request);
-  let text: string;
+async function readCaptureForm(request: Request): Promise<FormData> {
+  const bounded = limitBody(request);
   try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
+    return await bounded.request.formData();
+  } catch (error) {
+    if (bounded.overflowed()) throw requestTooLarge();
+    if (error instanceof WorkerError) throw error;
     throw new WorkerError({
-      code: "MALFORMED_JSON",
-      stage: "validation",
+      code: "MALFORMED_MULTIPART",
+      stage: "request",
       status: 400,
-      message: "Request body must be valid UTF-8 JSON",
+      message: "Request body must be valid multipart/form-data",
+      retryable: false,
+    });
+  }
+}
+
+function readMetadata(form: FormData): unknown {
+  const part = form.get(CAPTURE_METADATA_PART);
+  if (typeof part !== "string") {
+    throw new WorkerError({
+      code: "MISSING_CAPTURE_METADATA",
+      stage: "request",
+      status: 400,
+      message: `A "${CAPTURE_METADATA_PART}" JSON part is required`,
+      retryable: false,
+    });
+  }
+  if (new TextEncoder().encode(part).byteLength > MAX_METADATA_BYTES) {
+    throw new WorkerError({
+      code: "METADATA_TOO_LARGE",
+      stage: "request",
+      status: 413,
+      message: "Capture metadata exceeds the supported size",
       retryable: false,
     });
   }
 
   try {
-    return JSON.parse(text) as unknown;
+    return JSON.parse(part) as unknown;
   } catch {
     throw new WorkerError({
       code: "MALFORMED_JSON",
       stage: "validation",
       status: 400,
-      message: "Request body must be valid JSON",
+      message: "Capture metadata must be valid JSON",
       retryable: false,
     });
   }
+}
+
+function readImagePart(form: FormData): Blob {
+  const part = form.get(CAPTURE_IMAGE_PART);
+  if (part === null || typeof part === "string") {
+    throw new WorkerError({
+      code: "MISSING_CAPTURE_IMAGE",
+      stage: "request",
+      status: 400,
+      message: `An "${CAPTURE_IMAGE_PART}" file part is required`,
+      retryable: false,
+    });
+  }
+  if (part.size > MAX_IMAGE_BYTES) {
+    throw new WorkerError({
+      code: "IMAGE_TOO_LARGE",
+      stage: "validation",
+      status: 413,
+      message: "Capture image exceeds the 9 MB limit",
+      retryable: false,
+    });
+  }
+  return part;
+}
+
+function validationError(
+  issues: ReadonlyArray<{ path: PropertyKey[]; code: string }>,
+): WorkerError {
+  const imageIssue = issues.find((issue) => issue.path[0] === "image");
+  const tooLarge = imageIssue?.path[1] === "byteLength" && imageIssue.code === "too_big";
+
+  if (tooLarge) {
+    return new WorkerError({
+      code: "IMAGE_TOO_LARGE",
+      stage: "validation",
+      status: 413,
+      message: "Capture image exceeds the 9 MB limit",
+      retryable: false,
+    });
+  }
+  if (imageIssue) {
+    return new WorkerError({
+      code: "INVALID_IMAGE",
+      stage: "validation",
+      status: 400,
+      message: "Capture image metadata is not valid",
+      retryable: false,
+    });
+  }
+  return new WorkerError({
+    code: "INVALID_CAPTURE",
+    stage: "validation",
+    status: 400,
+    message: "Capture payload failed validation",
+    retryable: false,
+  });
 }
 
 function structuredLog(entry: DeliveryLog): void {
@@ -191,28 +289,24 @@ export function createWorker(dependencies: WorkerDependencies = {}) {
       let captureId: string | undefined;
       try {
         authenticate(request, env.CAPTURE_INGEST_SECRET);
+
         const contentType =
           request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
-        if (contentType !== "application/json") {
+        if (contentType !== "multipart/form-data") {
           throw new WorkerError({
             code: "UNSUPPORTED_MEDIA_TYPE",
             stage: "request",
             status: 415,
-            message: "Content-Type must be application/json",
+            message: "Content-Type must be multipart/form-data",
             retryable: false,
           });
         }
-        const candidate = await parseCapture(request);
-        if (
-          typeof candidate === "object" &&
-          candidate !== null &&
-          "captureId" in candidate &&
-          typeof candidate.captureId === "string" &&
-          /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-            candidate.captureId,
-          )
-        ) {
-          captureId = candidate.captureId;
+
+        const form = await readCaptureForm(request);
+        const candidate = readMetadata(form);
+
+        if (typeof candidate === "object" && candidate !== null && "captureId" in candidate) {
+          if (isCaptureId(candidate.captureId)) captureId = candidate.captureId;
         }
         if (
           typeof candidate === "object" &&
@@ -230,35 +324,20 @@ export function createWorker(dependencies: WorkerDependencies = {}) {
         }
 
         const parsed = captureV1Schema.safeParse(candidate);
-        if (!parsed.success) {
-          const imageTooLarge = parsed.error.issues.some(
-            (issue) =>
-              issue.path[0] === "image" &&
-              issue.path[1] === "dataUrl" &&
-              issue.message === "Decoded image exceeds 5 MiB",
-          );
-          const invalidImage = parsed.error.issues.some(
-            (issue) => issue.path[0] === "image" && issue.path[1] === "dataUrl",
-          );
+        if (!parsed.success) throw validationError(parsed.error.issues);
+
+        // Validate the bytes against their declared metadata before any Slack side effects.
+        const imagePart = readImagePart(form);
+        if (imagePart.type !== parsed.data.image.mimeType) {
           throw new WorkerError({
-            code: imageTooLarge
-              ? "IMAGE_TOO_LARGE"
-              : invalidImage
-                ? "INVALID_IMAGE"
-                : "INVALID_CAPTURE",
+            code: "INVALID_IMAGE",
             stage: "validation",
-            status: imageTooLarge ? 413 : 400,
-            message: imageTooLarge
-              ? "Capture image exceeds the 5 MiB decoded-image limit"
-              : invalidImage
-                ? "Capture image is not a valid PNG or JPEG data URL"
-              : "Capture payload failed validation",
+            status: 400,
+            message: "Capture image part type does not match its metadata",
             retryable: false,
           });
         }
-
-        // Validate decoded size and base64 integrity before any Slack side effects.
-        const decodedImage = decodeCaptureImage(parsed.data.image.dataUrl);
+        const decodedImage = validateCaptureImage(await imagePart.arrayBuffer(), parsed.data.image);
 
         if (!env.SLACK_BOT_TOKEN) {
           throw new WorkerError({
@@ -273,9 +352,7 @@ export function createWorker(dependencies: WorkerDependencies = {}) {
         const slack = new SlackClient(env.SLACK_BOT_TOKEN, dependencies.fetcher ?? fetch);
         const result = await publishCapture(parsed.data, {
           slack,
-          ...(env.SLACK_REVIEWER_IDS !== undefined
-            ? { reviewerIds: env.SLACK_REVIEWER_IDS }
-            : {}),
+          ...(env.SLACK_REVIEWER_IDS !== undefined ? { reviewerIds: env.SLACK_REVIEWER_IDS } : {}),
           ...(dependencies.makeAttempt !== undefined
             ? { makeAttempt: dependencies.makeAttempt }
             : {}),
@@ -296,10 +373,13 @@ export function createWorker(dependencies: WorkerDependencies = {}) {
                 cause: error,
               });
         (dependencies.log ?? structuredLog)({
-          ...(captureId !== undefined ? { captureId } : { captureId: "unknown" }),
+          captureId: captureId ?? "unknown",
           stage: normalized.stage,
           durationMs: Date.now() - requestStartedAt,
           outcome: "error",
+          code: normalized.code,
+          ...describeSlackError(normalized.cause),
+          ...(normalized.slack !== undefined ? normalized.slack : {}),
         });
         return errorResponse(normalized, captureId);
       }

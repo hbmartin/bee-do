@@ -4,7 +4,9 @@ import type {
   ClickEntry,
   ConsoleEntry,
 } from "../../src/shared/capture";
+import { CAPTURE_IMAGE_PART, CAPTURE_METADATA_PART } from "../../src/shared/capture";
 import { resolveProject } from "../../src/shared/projects";
+import { lockStorage } from "./storage";
 
 type Settings = {
   endpoint: string;
@@ -17,17 +19,17 @@ type CollectedContext = {
   diagnostics: { console: ConsoleEntry[]; clicks: ClickEntry[] };
 };
 
-type SubmitMessage = { type: "bee-do:submit"; capture: CaptureV1 };
+type SubmitMessage = {
+  type: "bee-do:submit";
+  capture: CaptureV1;
+  imageDataUrl: string;
+};
 
 const SETTINGS_DEFAULTS: Settings = {
   endpoint: "",
   secret: "",
   slackUserId: "",
 };
-
-async function lockStorage(): Promise<void> {
-  await chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
-}
 
 chrome.runtime.onInstalled.addListener(() => void lockStorage());
 chrome.runtime.onStartup.addListener(() => void lockStorage());
@@ -47,6 +49,20 @@ function sendToTab<T>(tabId: number, message: unknown): Promise<T | undefined> {
       resolve(response);
     });
   });
+}
+
+function decodeImageDataUrl(dataUrl: string, expectedMimeType: string): Uint8Array {
+  const match = /^data:(image\/(?:png|jpeg));base64,([A-Za-z0-9+/]+={0,2})$/.exec(dataUrl);
+  if (!match || match[1] !== expectedMimeType) {
+    throw new Error("The rendered image does not match its Capture metadata.");
+  }
+
+  const binary = atob(match[2] ?? "");
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
 }
 
 async function showPageAlert(tabId: number, message: string): Promise<void> {
@@ -134,16 +150,28 @@ chrome.runtime.onMessage.addListener(
     void (async () => {
       const settings = await getSettings();
       try {
+        const capture = {
+          ...message.capture,
+          requester: { slackUserId: settings.slackUserId },
+        };
+        const imageBytes = decodeImageDataUrl(message.imageDataUrl, capture.image.mimeType);
+        if (imageBytes.byteLength !== capture.image.byteLength) {
+          throw new Error("The rendered image size does not match its Capture metadata.");
+        }
+        const form = new FormData();
+        form.append(CAPTURE_METADATA_PART, JSON.stringify(capture));
+        form.append(
+          CAPTURE_IMAGE_PART,
+          new Blob([imageBytes], { type: capture.image.mimeType }),
+          `capture.${capture.image.mimeType === "image/jpeg" ? "jpg" : "png"}`,
+        );
+
         const response = await fetch(settings.endpoint, {
           method: "POST",
           headers: {
             authorization: `Bearer ${settings.secret}`,
-            "content-type": "application/json; charset=utf-8",
           },
-          body: JSON.stringify({
-            ...message.capture,
-            requester: { slackUserId: settings.slackUserId },
-          }),
+          body: form,
         });
 
         const body = (await response.json().catch(() => null)) as CaptureResponse | null;

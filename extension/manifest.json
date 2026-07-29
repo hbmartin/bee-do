@@ -5,10 +5,7 @@
   "minimum_chrome_version": "120",
   "description": "Describe and mark up a page, then deliver the capture to Slack.",
   "permissions": ["activeTab", "scripting", "storage"],
-  "host_permissions": [
-    "https://trellium.ai/*",
-    "https://*.vercel.app/*"
-  ],
+  "host_permissions": ["https://trellium.ai/*", "https://*.vercel.app/*"],
   "optional_host_permissions": [
     "https://*.workers.dev/*",
     "http://localhost/*",

@@ -1,0 +1,33 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error"
+  },
+  "plugins": ["typescript", "unicorn", "import", "promise", "vitest"],
+  "rules": {
+    "no-underscore-dangle": "off",
+    "vitest/no-conditional-expect": "off"
+  },
+  "options": {
+    "maxWarnings": 0
+  },
+  "overrides": [
+    {
+      "files": ["extension/src/**"],
+      "env": { "browser": true, "webextensions": true }
+    },
+    {
+      "files": ["src/worker/**"],
+      "env": { "worker": true }
+    },
+    {
+      "files": ["test/**"],
+      "env": { "vitest": true }
+    },
+    {
+      "files": ["scripts/**"],
+      "env": { "node": true }
+    }
+  ]
+}

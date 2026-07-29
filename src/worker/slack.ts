@@ -27,6 +27,24 @@ export class SlackApiError extends Error {
   }
 }
 
+/**
+ * Extracts the non-sensitive parts of a Slack failure for structured logs. Without this an
+ * operator sees only the stage that failed, with no way to tell `invalid_auth` from
+ * `not_in_channel` from a transport error.
+ */
+export function describeSlackError(error: unknown): {
+  slackMethod?: string;
+  slackCode?: string;
+  httpStatus?: number;
+} {
+  if (!(error instanceof SlackApiError)) return {};
+  return {
+    slackMethod: error.method,
+    ...(error.slackCode !== undefined ? { slackCode: error.slackCode } : {}),
+    httpStatus: error.httpStatus,
+  };
+}
+
 export class SlackClient {
   constructor(
     private readonly token: string,
@@ -45,11 +63,7 @@ export class SlackClient {
     let encodedBody: string | undefined;
     if (httpMethod === "GET") {
       for (const [key, value] of Object.entries(body)) {
-        if (
-          typeof value !== "string" &&
-          typeof value !== "number" &&
-          typeof value !== "boolean"
-        ) {
+        if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") {
           throw new TypeError(`Slack GET parameter ${key} must be scalar`);
         }
         url.searchParams.set(key, String(value));
@@ -92,9 +106,7 @@ export class SlackClient {
         method,
         message: `Slack ${method} was rejected`,
         httpStatus: response.status,
-        ...(typeof envelope.error === "string"
-          ? { slackCode: envelope.error }
-          : {}),
+        ...(typeof envelope.error === "string" ? { slackCode: envelope.error } : {}),
       });
     }
 
