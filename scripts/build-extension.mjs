@@ -8,6 +8,7 @@ const source = path.join(root, "extension");
 const output = path.join(root, "dist", "extension");
 
 const entries = ["background", "bridge", "collector", "options", "overlay"];
+const includeSourceMaps = process.env.BEE_DO_SOURCE_MAPS === "1";
 
 await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
@@ -21,7 +22,7 @@ await Promise.all(
       format: "iife",
       platform: "browser",
       target: "chrome120",
-      sourcemap: true,
+      sourcemap: includeSourceMaps,
       logLevel: "info",
     }),
   ),

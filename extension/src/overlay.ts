@@ -1,8 +1,15 @@
 import type { CaptureResponse, CaptureSuccess, CaptureV1 } from "../../src/shared/capture";
 import { MAX_LABEL_TEXT, MAX_REQUEST_TEXT } from "../../src/shared/limits";
 import { buildCapture } from "./capture";
-import { containRect, normalizePoint, type Point } from "./geometry";
+import {
+  clampNormalizedPoint,
+  clampOffset,
+  containRect,
+  normalizePoint,
+  type Point,
+} from "./geometry";
 import { fitImageToBudget, type ImageEncodingRequest } from "./image-budget";
+import { normalizeHttpsUrl } from "./url";
 
 declare global {
   interface Window {
@@ -113,6 +120,7 @@ class CaptureOverlay {
   private actions: Markup[] = [];
   private drawing: Stroke | null = null;
   private labelEditor: HTMLInputElement | null = null;
+  private labelEditorPoint: Point | null = null;
   private tool: Tool = "pen";
   private ready = false;
   private sending = false;
@@ -201,9 +209,10 @@ class CaptureOverlay {
     openSlack.addEventListener(
       "click",
       () => {
-        if (this.delivered) {
-          window.open(this.delivered.slack.permalink, "_blank", "noopener,noreferrer");
-        }
+        if (!this.delivered) return;
+        const permalink = normalizeHttpsUrl(this.delivered.slack.permalink);
+        if (!permalink) return;
+        window.open(permalink, "_blank", "noopener,noreferrer");
       },
       { signal: this.abortController.signal },
     );
@@ -228,6 +237,16 @@ class CaptureOverlay {
 
   private bind(): void {
     const signal = this.abortController.signal;
+    this.shot.addEventListener(
+      "error",
+      () => {
+        this.ready = false;
+        this.status.dataset.tone = "bad";
+        this.status.textContent = "The screenshot could not be loaded. Close and retry.";
+        this.update();
+      },
+      { once: true, signal },
+    );
     this.shot.addEventListener(
       "load",
       () => {
@@ -273,6 +292,7 @@ class CaptureOverlay {
       width: `${frame.width}px`,
       height: `${frame.height}px`,
     });
+    this.positionLabelEditor();
     if (this.ink.width !== this.shot.naturalWidth || this.ink.height !== this.shot.naturalHeight) {
       this.ink.width = this.shot.naturalWidth;
       this.ink.height = this.shot.naturalHeight;
@@ -303,7 +323,8 @@ class CaptureOverlay {
 
   private onPointerMove = (event: PointerEvent): void => {
     if (!this.drawing) return;
-    const point = this.pointFromEvent(event);
+    const rect = this.frame.getBoundingClientRect();
+    const point = clampNormalizedPoint(event.clientX, event.clientY, rect);
     if (!point) return;
     this.drawing.points.push(point);
     this.paint();
@@ -331,10 +352,10 @@ class CaptureOverlay {
     editor.type = "text";
     editor.maxLength = MAX_LABEL_TEXT;
     editor.placeholder = "Type label, then Enter";
-    editor.style.left = `${point.x * 100}%`;
-    editor.style.top = `${point.y * 100}%`;
     this.frame.append(editor);
     this.labelEditor = editor;
+    this.labelEditorPoint = point;
+    this.positionLabelEditor();
 
     editor.addEventListener(
       "keydown",
@@ -365,6 +386,24 @@ class CaptureOverlay {
   private cancelLabelEditor(): void {
     this.labelEditor?.remove();
     this.labelEditor = null;
+    this.labelEditorPoint = null;
+  }
+
+  private positionLabelEditor(): void {
+    if (!this.labelEditor || !this.labelEditorPoint) return;
+    const frameRect = this.frame.getBoundingClientRect();
+    const editorRect = this.labelEditor.getBoundingClientRect();
+    const { width, height } = frameRect;
+    this.labelEditor.style.left = `${clampOffset(
+      this.labelEditorPoint.x * width,
+      editorRect.width,
+      width,
+    )}px`;
+    this.labelEditor.style.top = `${clampOffset(
+      this.labelEditorPoint.y * height - 2,
+      editorRect.height,
+      height,
+    )}px`;
   }
 
   private undo = (): void => {
@@ -382,14 +421,29 @@ class CaptureOverlay {
   };
 
   private onKeydown = (event: KeyboardEvent): void => {
+    const target = event.composedPath()[0];
+    const typing =
+      target instanceof Node &&
+      this.shadow.contains(target) &&
+      (target instanceof HTMLTextAreaElement ||
+        target instanceof HTMLInputElement ||
+        (target instanceof HTMLElement && target.isContentEditable));
+
     if (event.key === "Escape") {
+      if (target === this.labelEditor) {
+        event.preventDefault();
+        event.stopPropagation();
+        this.cancelLabelEditor();
+        return;
+      }
+      if (typing) return;
       event.preventDefault();
       event.stopPropagation();
-      if (this.labelEditor) this.cancelLabelEditor();
-      else this.close();
+      this.close();
       return;
     }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
+      if (typing) return;
       event.preventDefault();
       event.stopPropagation();
       this.undo();

@@ -47,6 +47,8 @@ type CaptureV1 = {
 };
 ```
 
+The bearer secret authenticates access to the pilot ingest API, not the person named by `requester.slackUserId`. The requester ID is self-asserted and unverified in M0: any holder of the shared secret can submit another valid member ID, affecting Slack attribution and invitations. If the secret is exposed or a pilot participant should lose access, replace `CAPTURE_INGEST_SECRET` and update every authorized extension installation; the old value then receives `401 UNAUTHORIZED`.
+
 A successful Delivery returns HTTP `201`:
 
 ```json
@@ -161,7 +163,7 @@ Build the Manifest V3 extension:
 pnpm build:extension
 ```
 
-The unpacked artifact is written to `dist/extension`.
+The unpacked artifact is written to `dist/extension`. Default builds omit source maps. For a local debugging build that includes them, run `BEE_DO_SOURCE_MAPS=1 pnpm build:extension`.
 
 1. Open `chrome://extensions`.
 2. Enable **Developer mode** and choose **Load unpacked**.
@@ -187,7 +189,7 @@ On an approved page, select the toolbar action or press `Alt+Shift+A`. Bee-do ca
 - **Text** to click, type a label, and press Enter.
 - **Undo** to remove the latest stroke or label.
 - **Clear** to remove all markup.
-- **Escape** to cancel active text input first, or close the overlay when no text is active.
+- **Escape** to cancel an active screenshot label, remain in the request field while it is focused, or close the overlay when no text field is active.
 
 Send the Capture. On success, use **Open Slack** to visit the root message or **Close** to dismiss the overlay. A failed Delivery keeps the same Capture ID available for retry so duplicate or partial Request Channels can be traced.
 
@@ -222,6 +224,7 @@ M0 is complete only after an owner-operated smoke test from an approved page. Us
 - The application accepts at most 10,000,000 bytes of multipart data, including at most 9,000,000 raw image bytes and 256,000 metadata bytes. The extension tries JPEG quality reductions before downscaling to an 800px-wide floor.
 - Console history is limited to 25 entries and click history to 12 entries, collected only after the extension collector loads.
 - The only Project in M0 is `trellium`, derived from the approved page origin rather than selected by the requester.
+- The shared pilot secret authorizes Capture submission but does not verify `requester.slackUserId`; requester attribution is self-asserted in M0.
 - There is no D1, R2, CI deployment, automated browser suite, real-Slack CI, Slack interactivity, or channel auto-archival in this milestone.
 
 The Worker emits structured operational logs for Capture ID, Delivery stage, duration, Slack identifiers, warning codes, and outcome. It must not log the authorization secret, request text, image, or diagnostic contents.

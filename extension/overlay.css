@@ -85,7 +85,6 @@
   position: absolute;
   z-index: 2;
   width: min(300px, 50%);
-  transform: translateY(-2px);
   border: 2px solid var(--signal);
   border-radius: 6px;
   padding: 7px 9px;
@@ -279,7 +278,7 @@
 .status {
   padding: 0 20px 12px;
   color: var(--muted);
-  word-break: break-word;
+  overflow-wrap: anywhere;
   font:
     11px/1.5 ui-monospace,
     SFMono-Regular,

@@ -10,7 +10,13 @@ import {
 } from "../src/shared/capture";
 import { isSupportedPage, resolveProject, TRELLIUM_PROJECT } from "../src/shared/projects";
 import { buildCapture } from "../extension/src/capture";
-import { containRect, normalizePoint } from "../extension/src/geometry";
+import {
+  clampNormalizedPoint,
+  clampOffset,
+  containRect,
+  normalizePoint,
+} from "../extension/src/geometry";
+import { normalizeHttpsUrl } from "../extension/src/url";
 
 const CAPTURE_ID = "c773afc4-f923-47ad-b1c1-ceffa1f4e5af";
 const CAPTURED_AT = "2026-07-29T12:00:00.000Z";
@@ -271,5 +277,37 @@ describe("screenshot coordinate mapping", () => {
     expect(normalizePoint(500, 275, rect)).toEqual({ x: 0.5, y: 0.5 });
     expect(normalizePoint(99, 275, rect)).toBeNull();
     expect(normalizePoint(500, 501, rect)).toBeNull();
+  });
+
+  it("clamps captured pointer movement to the rendered image boundary", () => {
+    const rect = { left: 100, top: 50, width: 800, height: 450 };
+
+    expect(clampNormalizedPoint(99, 275, rect)).toEqual({ x: 0, y: 0.5 });
+    expect(clampNormalizedPoint(901, 501, rect)).toEqual({ x: 1, y: 1 });
+    expect(clampNormalizedPoint(500, 275, rect)).toEqual({ x: 0.5, y: 0.5 });
+  });
+
+  it("keeps an editor inside its container", () => {
+    expect(clampOffset(190, 50, 200)).toBe(150);
+    expect(clampOffset(-2, 50, 200)).toBe(0);
+    expect(clampOffset(40, 50, 200)).toBe(40);
+    expect(clampOffset(40, 250, 200)).toBe(0);
+  });
+});
+
+describe("external URL validation", () => {
+  it("normalizes HTTPS URLs", () => {
+    expect(normalizeHttpsUrl("https://workspace.slack.com/archives/C123/p456")).toBe(
+      "https://workspace.slack.com/archives/C123/p456",
+    );
+  });
+
+  it.each([
+    "javascript:alert(document.domain)",
+    "data:text/html,unsafe",
+    "http://workspace.slack.com/archives/C123/p456",
+    "not a URL",
+  ])("rejects a non-HTTPS external URL: %s", (url) => {
+    expect(normalizeHttpsUrl(url)).toBeNull();
   });
 });

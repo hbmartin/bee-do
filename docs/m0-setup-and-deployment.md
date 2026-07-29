@@ -84,7 +84,7 @@ Keep this worksheet in a password manager or another approved secret store, not 
 | Slack bot token     | `xoxb-...`                                      | Worker secret `SLACK_BOT_TOKEN`             |
 | Pilot ingest secret | At least 32 random bytes                        | Worker and each extension installation      |
 | Reviewer member IDs | `U012...,W034...`                               | Optional Worker secret `SLACK_REVIEWER_IDS` |
-| Requester member ID | `U012...`                                       | Extension settings                          |
+| Requester member ID | `U012...`                                       | Extension settings; self-asserted in M0     |
 | Worker origin       | `https://bee-do-ingest.<subdomain>.workers.dev` | Health check and extension endpoint         |
 | Capture endpoint    | Worker origin plus `/v1/captures`               | Extension settings                          |
 
@@ -262,7 +262,7 @@ Build the unpacked Manifest V3 extension:
 pnpm build:extension
 ```
 
-The loadable directory is `dist/extension`. It contains the manifest, options page, styles, compiled JavaScript, and source maps.
+The loadable directory is `dist/extension`. It contains the manifest, options page, styles, and compiled JavaScript. Default builds omit source maps; include them for local debugging with `BEE_DO_SOURCE_MAPS=1 pnpm build:extension`.
 
 1. Open `chrome://extensions` in Chrome.
 2. Turn on **Developer mode**.
@@ -290,6 +290,8 @@ The endpoint validator allows only:
 - `http://127.0.0.1[:port]/v1/captures`
 
 Settings are stored in `chrome.storage.local` for that Chrome profile. The extension asks Chrome to restrict the settings to trusted extension contexts, but the shared secret remains a pilot credential and is not suitable for public distribution.
+
+The shared bearer secret authenticates access to the ingest API, not the Slack member entered in extension settings. Requester identity is self-asserted and unverified in M0. Any secret holder can submit another valid member ID, which can change attribution and invitations. Rotate `CAPTURE_INGEST_SECRET` to revoke a holder or respond to suspected exposure, then update every remaining authorized installation.
 
 ### Refresh after an extension update
 
@@ -334,7 +336,7 @@ Useful overlay controls are:
 
 - **Undo:** remove the most recent stroke or label.
 - **Clear:** remove all annotations.
-- **Escape:** cancel active text input first; when no text input is active, close the overlay.
+- **Escape:** cancel an active screenshot label; while the request field is focused, leave it open; when no text field is active, close the overlay.
 - **Close:** dismiss the overlay after success.
 
 The screenshot is taken before the overlay opens, so the Bee-do UI should not appear in the delivered image. Only the visible viewport is captured; this is not a full-page screenshot.
@@ -509,6 +511,7 @@ For any Slack Delivery error, the structured log's `slackMethod`, `slackCode`, a
 - Image types: PNG or JPEG only; declared MIME type, byte length, and file signature are validated before Slack side effects.
 - Oversized captures: the extension tries lower JPEG quality and then downscales; it does not intentionally reduce a wider source below 800 pixels, and it never upscales a narrower source.
 - Authentication: one high-entropy bearer secret shared by manually installed pilot extensions.
+- Requester identity: the configured Slack member ID is self-asserted and is not authenticated by the shared pilot secret.
 - Settings: stored locally in the Chrome profile, with trusted-context access requested where supported.
 - Supported project: only `trellium`, derived from an allowlisted HTTPS page origin rather than requester input.
 - Slack channels: public and manually managed.
