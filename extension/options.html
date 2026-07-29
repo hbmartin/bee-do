@@ -2,7 +2,8 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Annotate → Slack</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Bee-do Capture settings</title>
     <style>
       :root {
         color-scheme: dark;
@@ -18,10 +19,10 @@
         font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
       main {
-        max-width: 460px;
+        max-width: 500px;
         margin: 0 auto;
       }
-      p.eyebrow {
+      .eyebrow {
         margin: 0 0 6px;
         color: var(--muted);
         font: 10px/1 ui-monospace, Menlo, monospace;
@@ -37,7 +38,7 @@
         display: block;
         margin-bottom: 18px;
       }
-      span {
+      label > span {
         display: block;
         margin-bottom: 5px;
       }
@@ -46,7 +47,11 @@
         margin-top: 4px;
         color: var(--muted);
       }
+      code {
+        font-family: ui-monospace, Menlo, monospace;
+      }
       input {
+        box-sizing: border-box;
         width: 100%;
         padding: 9px 10px;
         border: 1px solid var(--line);
@@ -69,47 +74,45 @@
         font: 600 13px/1 inherit;
         cursor: pointer;
       }
-      #saved {
+      #status {
+        display: inline-block;
         margin-left: 12px;
+        max-width: 300px;
         color: #6fe0a8;
-        font: 11px/1 ui-monospace, Menlo, monospace;
-        opacity: 0;
+        font: 11px/1.4 ui-monospace, Menlo, monospace;
       }
-      #saved[data-on] {
-        opacity: 1;
+      #status[data-tone="bad"] {
+        color: #ff8fa8;
       }
     </style>
   </head>
   <body>
     <main>
-      <p class="eyebrow">Annotate → Slack</p>
-      <h1>Where requests go</h1>
+      <p class="eyebrow">Bee-do Capture</p>
+      <h1>Pilot settings</h1>
 
-      <label>
-        <span>Endpoint</span>
-        <input id="endpoint" type="url" placeholder="https://your-app.vercel.app/api/ingest" />
-        <small>The serverless function that posts to Slack.</small>
-      </label>
+      <form id="settings">
+        <label>
+          <span>Capture endpoint</span>
+          <input id="endpoint" type="url" required placeholder="https://bee-do-ingest.example.workers.dev/v1/captures" />
+          <small>The deployed Worker endpoint, including <code>/v1/captures</code>.</small>
+        </label>
 
-      <label>
-        <span>Shared secret</span>
-        <input id="secret" type="password" placeholder="matches ANNOTATE_SECRET" />
-      </label>
+        <label>
+          <span>Pilot secret</span>
+          <input id="secret" type="password" required autocomplete="off" placeholder="matches CAPTURE_INGEST_SECRET" />
+          <small>Stored only in this browser profile and sent only to the Worker.</small>
+        </label>
 
-      <label>
-        <span>Your name</span>
-        <input id="requester" type="text" placeholder="e.g. Dana" />
-        <small>Shown on the request so the thread has a person attached.</small>
-      </label>
+        <label>
+          <span>Your Slack member ID</span>
+          <input id="slackUserId" type="text" required spellcheck="false" placeholder="U012ABCDEF" />
+          <small>Open your Slack profile → More → Copy member ID.</small>
+        </label>
 
-      <label>
-        <span>Project</span>
-        <input id="project" type="text" placeholder="svrn" />
-        <small>Which repo this page belongs to. Manual for now.</small>
-      </label>
-
-      <button id="save">Save settings</button>
-      <span id="saved">Saved</span>
+        <button type="submit">Save settings</button>
+        <span id="status" role="status" aria-live="polite"></span>
+      </form>
     </main>
     <script src="options.js"></script>
   </body>

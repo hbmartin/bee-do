@@ -1,109 +1,216 @@
-# Annotate → Slack (Phase 1)
+# Bee-do M0: Capture → Slack
 
-Browser extension → serverless function → Slack. No agent, no sandbox, no repo access.
-The point of this phase is to prove the capture is good enough to act on, and to
-lock the bundle schema that every later phase reads.
+Bee-do M0 is a deployable tracer from a Chrome browser extension to a Cloudflare Worker and then to a dedicated Slack app. A requester describes a change, marks up the visible viewport, and sends one versioned Capture. The Worker validates it and creates a public Request Channel containing a summary, the rendered screenshot, and bounded page diagnostics.
 
-```
-extension ──POST /api/ingest──▶ cloudflare worker ──▶ Slack
-  capture                         auth + shape         new channel
-  annotate                                             message + threaded PNG
-  collect context
-```
+This milestone deliberately stops at Slack. It does not persist Captures, run a coding agent, create a branch or pull request, watch a preview deployment, or interact with Slack after Delivery.
 
-## Slack app
-
-Create an app at api.slack.com/apps → **From scratch**. Under *OAuth & Permissions*
-add these bot scopes:
-
-| Scope | Why |
-| --- | --- |
-| `chat:write` | post the request |
-| `files:write` | upload the annotated capture |
-| `channels:manage` | open a channel per request |
-| `channels:join` | bot lands in the channel it creates |
-
-Install to the workspace and copy the bot token (`xoxb-…`).
-
-## Deploy the function
-
-```bash
-cloudflare env add SLACK_BOT_TOKEN      # xoxb-…
-cloudflare env add ANNOTATE_SECRET      # any long random string
-cloudflare env add SLACK_INVITE_USERS   # optional: U0123,U0456
-# cloudflare env add SLACK_CHANNEL_ID   # optional: post to one fixed channel instead
-cloudflare deploy --prod
+```text
+Chrome extension ──POST /v1/captures──▶ Cloudflare Worker ──▶ Slack Request Channel
+  capture + annotate                 validate + deliver       root summary
+  console + click context                                     threaded image
+                                                               diagnostics
 ```
 
-## Load the extension
+Domain terminology shared by this repository is defined in [CONTEXT.md](./CONTEXT.md). The longer-term direction and intentionally unresolved architecture are in [Annotation based PR Agent proposal.md](./Annotation%20based%20PR%20Agent%20proposal.md).
 
-1. `chrome://extensions` → Developer mode → **Load unpacked** → pick `extension/`.
-2. Open the extension's options and fill in the endpoint, the secret, your name,
-   and the project slug.
-3. Go to any page on your app and hit the toolbar button (or `Alt+Shift+A`).
+## Capture API
 
-Drag across anything you want changed. Each drag drops a numbered pin and opens a
-matching note in the rail. `Cmd/Ctrl+Z` undoes, `Esc` closes. Send is disabled
-until every mark has a note — that constraint exists because an unlabelled mark is
-the one thing a coding agent cannot act on.
+The extension sends `POST /v1/captures` with `Content-Type: application/json` and `Authorization: Bearer <pilot-secret>`. The shared TypeScript/Zod contract is versioned as:
 
-## The bundle
+```ts
+type CaptureV1 = {
+  schemaVersion: 1;
+  captureId: string; // UUID generated once and reused on retry
+  capturedAt: string;
+  request: { text: string };
+  requester: { slackUserId: string };
+  project: { slug: "trellium" };
+  page: {
+    url: string;
+    path: string;
+    search: string;
+    title: string;
+    viewport: { width: number; height: number };
+    devicePixelRatio: number;
+  };
+  image: {
+    dataUrl: `data:image/${"png" | "jpeg"};base64,${string}`;
+    annotated: boolean;
+  };
+  diagnostics: {
+    console: Array<{ level: string; message: string; occurredAt: string }>;
+    clicks: Array<{ selector: string; text: string; occurredAt: string }>;
+  };
+};
+```
 
-This schema is the contract. Phase 2's clarifier and Phase 3's agent prompt both
-read it, so change it here first.
+A successful Delivery returns HTTP `201`:
 
-```jsonc
+```json
 {
-  "capturedAt": "2026-07-29T18:04:11.930Z",
-  "requester": "Dana",
-  "project": "svrn",
-  "page": {
-    "url": "https://svrn.app/deals/abc?tab=terms",
-    "path": "/deals/abc",
-    "search": "?tab=terms",
-    "title": "Terms · Deal",
-    "viewport": { "w": 1440, "h": 812 },
-    "dpr": 2
+  "ok": true,
+  "captureId": "…",
+  "slack": {
+    "channelId": "C…",
+    "channelName": "bee-trellium-dashboard-1234abcd-a1b2",
+    "rootTs": "…",
+    "permalink": "https://…slack.com/archives/…"
   },
-  "annotations": [
-    { "n": 1, "note": "This label wraps at 1440 — shorten or truncate.",
-      "at": { "x": 0.41, "y": 0.28 } }
-  ],
-  "consoleErrors": [
-    { "level": "error", "message": "…", "at": "2026-07-29T18:03:02.114Z" }
-  ],
-  "clickTrace": [
-    { "selector": "div.panel > button", "text": "Terms", "at": "…" }
-  ],
-  "screenshot": "data:image/png;base64,…"   // marks + numbers burned in
+  "warnings": []
 }
 ```
 
-Two details that matter more than they look:
+Failures return a non-2xx status with a stable machine code, failed stage, safe message, and retry guidance:
 
-- **The numbers are load-bearing.** The same integer appears on the pin in the PNG
-  and in front of the note. That correspondence is the whole reason a model can
-  read a freehand scribble. Don't let a later refactor drop it.
-- **The screenshot is a still, not the live page.** Capture happens before the
-  overlay opens, so what gets marked up is pixel-identical to what the agent
-  receives. No layout drift between annotating and sending.
+```json
+{
+  "ok": false,
+  "captureId": "…",
+  "error": {
+    "code": "IMAGE_UPLOAD_FAILED",
+    "stage": "image_upload",
+    "message": "Capture image could not be uploaded to Slack",
+    "retryable": true
+  }
+}
+```
 
-## Known edges
+`GET /healthz` is unauthenticated. Every other route or method is rejected. The Worker applies an 8 MiB request-body cap and validates the decoded image at a 5 MiB cap before creating anything in Slack.
 
-- Visible viewport only. Full-page capture needs scroll-and-stitch in the service
-  worker — worth adding once you see whether anyone misses it.
-- cloudflare caps request bodies around 4.5 MB. The overlay falls back to JPEG q90 if
-  the PNG exceeds ~3 MB; if you start hitting that, move to a presigned upload to
-  Blob storage and send a URL instead of base64.
-- `consoleErrors` only contains what happened *after* the collector loaded. It runs
-  at `document_start`, so that's nearly everything, but not errors from a page
-  loaded before the extension was installed.
-- Shared secret in `chrome.storage.sync` is fine for an internal tool and not fine
-  for anything else.
+## Prerequisites
 
-## What Phase 2 adds
+- Chrome 120 or newer.
+- Node.js supported by the checked-in Wrangler version.
+- pnpm 11.15.1 (the version declared in `package.json`).
+- A Cloudflare account that can deploy a `workers.dev` Worker.
+- Permission to create and install an app in the target Slack workspace.
 
-The function stops being the last stop: it writes the bundle to Postgres, then a
-clarifier call turns it into Block Kit questions posted in the same channel. The
-sandbox doesn't appear until Phase 3, which is the first time any of this needs
-Daytona, a git identity, or a database for the app under test.
+Install dependencies and generate the Cloudflare environment types:
+
+```bash
+corepack enable
+pnpm install
+pnpm generate:types
+```
+
+## 1. Install the dedicated Slack app
+
+The portable app definition lives at [`slack/app-manifest.yaml`](./slack/app-manifest.yaml). It grants the Bee-do bot only these scopes:
+
+| Scope | Used for |
+| --- | --- |
+| `channels:manage` | Create one public Request Channel per Capture |
+| `channels:write.invites` | Invite the requester and configured reviewers |
+| `chat:write` | Publish the root summary and diagnostics |
+| `files:write` | Upload the rendered screenshot |
+
+1. In [Slack API apps](https://api.slack.com/apps), choose **Create New App** → **From an app manifest**.
+2. Select the pilot workspace, paste or upload `slack/app-manifest.yaml`, and create the app.
+3. Review the four requested scopes, then install the app to the workspace.
+4. Copy the **Bot User OAuth Token** (`xoxb-...`) from **OAuth & Permissions**.
+5. Collect the Slack member IDs for the requester and any reviewers. A member can copy their ID from their Slack profile under **More**.
+
+The extension stores one requester member ID per browser profile. Reviewers are configured centrally on the Worker.
+
+## 2. Configure and deploy the Worker
+
+The checked-in `wrangler.jsonc` deploys the `bee-do-ingest` service to `workers.dev`. Add its secrets interactively; do not commit their values:
+
+```bash
+pnpm exec wrangler secret put SLACK_BOT_TOKEN
+pnpm exec wrangler secret put CAPTURE_INGEST_SECRET
+pnpm exec wrangler secret put SLACK_REVIEWER_IDS
+```
+
+- `SLACK_BOT_TOKEN` is the `xoxb-...` token from the Slack app installation.
+- `CAPTURE_INGEST_SECRET` is a long, randomly generated pilot secret shared with manually installed extension copies.
+- `SLACK_REVIEWER_IDS` is a comma-separated list of Slack member IDs. Use an empty value if the requester should be the only invitee.
+
+Deploy after running type checks, tests, and production builds:
+
+```bash
+pnpm deploy
+```
+
+Wrangler prints the service URL, typically `https://bee-do-ingest.<account-subdomain>.workers.dev`. Confirm the deployment without authentication:
+
+```bash
+curl https://bee-do-ingest.<account-subdomain>.workers.dev/healthz
+```
+
+For local development, create an ignored `.dev.vars` file with the same three keys, then run:
+
+```bash
+pnpm dev
+```
+
+Use the local URL printed by Wrangler, with `/v1/captures`, in the extension settings. The extension accepts an HTTP endpoint only on `localhost` or `127.0.0.1`; deployed endpoints must use HTTPS on `workers.dev`.
+
+## 3. Build and load the extension
+
+Build the Manifest V3 extension:
+
+```bash
+pnpm build:extension
+```
+
+The unpacked artifact is written to `dist/extension`.
+
+1. Open `chrome://extensions`.
+2. Enable **Developer mode** and choose **Load unpacked**.
+3. Select this repository's `dist/extension` directory.
+4. Open the extension's **Options** page.
+5. Enter the full endpoint ending in `/v1/captures`, the matching pilot secret, and the requester's Slack member ID.
+6. Choose **Save settings** and approve access to that exact Worker origin when Chrome prompts.
+
+Settings are kept in `chrome.storage.local` and restricted to trusted extension contexts. The pilot secret is appropriate only for this manually distributed internal tracer.
+
+## 4. Create a Capture
+
+Bee-do is enabled only on:
+
+- `https://trellium.ai/*`
+- Vercel preview hosts ending in `-hbmartins-projects.vercel.app`
+
+Chrome requires the extension to declare `https://*.vercel.app/*`, but Bee-do disables collection and submission on every Vercel host that does not match the approved suffix.
+
+On an approved page, select the toolbar action or press `Alt+Shift+A`. Bee-do captures the visible viewport before opening its full-screen overlay. Enter a required request, then use:
+
+- **Pen** to draw freehand strokes.
+- **Text** to click, type a label, and press Enter.
+- **Undo** to remove the latest stroke or label.
+- **Clear** to remove all markup.
+- **Escape** to cancel active text input first, or close the overlay when no text is active.
+
+Send the Capture. On success, use **Open Slack** to visit the root message or **Close** to dismiss the overlay. A failed Delivery keeps the same Capture ID available for retry so duplicate or partial Request Channels can be traced.
+
+## Verification
+
+Run the complete local verification set before a deployment:
+
+```bash
+pnpm typecheck
+pnpm test
+pnpm build
+```
+
+M0 is complete only after an owner-operated smoke test from an approved page. Use a non-empty request, one pen stroke, and one text label, then confirm:
+
+- A new public Request Channel is created.
+- The requester and configured reviewers are invited, or invitation failures are reported as non-fatal warnings.
+- The root summary identifies the request, requester, project, page, viewport, and Capture ID.
+- The rendered viewport is uploaded in the root message thread with both annotations in the correct positions.
+- Console and click diagnostics appear in the thread when present.
+- **Open Slack** reaches the root message.
+
+## M0 constraints
+
+- Captures are stateless. A retry can create a duplicate or leave a partial Request Channel; the shared Capture ID is the correlation key.
+- Request Channels are public and cleanup is manual.
+- Only the visible viewport is captured. The rendered, annotated image is delivered; an unmarked baseline is not retained.
+- The application accepts at most 8 MiB of JSON and 5 MiB of decoded image data. The extension downscales and converts oversized PNGs to JPEG before submission.
+- Console history is limited to 25 entries and click history to 12 entries, collected only after the extension collector loads.
+- The only Project in M0 is `trellium`, derived from the approved page origin rather than selected by the requester.
+- There is no D1, R2, CI deployment, automated browser suite, real-Slack CI, Slack interactivity, or channel auto-archival in this milestone.
+
+The Worker emits structured operational logs for Capture ID, Delivery stage, duration, Slack identifiers, warning codes, and outcome. It must not log the authorization secret, request text, image, or diagnostic contents.
