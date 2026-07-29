@@ -32,12 +32,13 @@ describe("image budget policy", () => {
     expect(result).toMatchObject({ mimeType: "image/jpeg", scale: 1, quality: 0.85 });
     expect(encode.mock.calls.map(([request]) => request)).toEqual([
       { mimeType: "image/png", scale: 1 },
+      { mimeType: "image/jpeg", scale: 1, quality: 0.55 },
       { mimeType: "image/jpeg", scale: 1, quality: 0.92 },
       { mimeType: "image/jpeg", scale: 1, quality: 0.85 },
     ]);
   });
 
-  it("downscales only after exhausting the quality sweep", async () => {
+  it("downscales immediately when the lowest quality cannot fit", async () => {
     const encode = vi.fn<ImageEncoder>(async (request) => {
       if (request.mimeType === "image/png") return blob(180, request.mimeType);
       return blob(request.scale < 1 ? 90 : 140, request.mimeType);
@@ -46,7 +47,12 @@ describe("image budget policy", () => {
     const result = await fitImageToBudget(1_600, encode, 100);
 
     expect(result).toMatchObject({ mimeType: "image/jpeg", scale: 0.75, quality: 0.92 });
-    expect(encode).toHaveBeenCalledTimes(7);
+    expect(encode.mock.calls.map(([request]) => request)).toEqual([
+      { mimeType: "image/png", scale: 1 },
+      { mimeType: "image/jpeg", scale: 1, quality: 0.55 },
+      { mimeType: "image/jpeg", scale: 0.75, quality: 0.55 },
+      { mimeType: "image/jpeg", scale: 0.75, quality: 0.92 },
+    ]);
   });
 
   it("returns the smallest floor attempt when nothing fits", async () => {

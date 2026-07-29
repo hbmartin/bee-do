@@ -31,12 +31,24 @@ export async function fitImageToBudget(
   const minimumScale = Math.min(1, MIN_IMAGE_WIDTH / Math.max(1, sourceWidth));
   let scale = 1;
   while (true) {
-    for (const quality of JPEG_QUALITIES) {
-      const request: ImageEncodingRequest = { mimeType: "image/jpeg", scale, quality };
-      const blob = await encode(request);
-      const attempt: BudgetedImage = { ...request, blob };
-      if (blob.size < best.blob.size) best = attempt;
-      if (blob.size <= maxBytes) return attempt;
+    const floorQuality = JPEG_QUALITIES.at(-1)!;
+    const floorRequest: ImageEncodingRequest = {
+      mimeType: "image/jpeg",
+      scale,
+      quality: floorQuality,
+    };
+    const floor = await encode(floorRequest);
+    const floorAttempt: BudgetedImage = { ...floorRequest, blob: floor };
+    if (floor.size < best.blob.size) best = floorAttempt;
+
+    if (floor.size <= maxBytes) {
+      for (const quality of JPEG_QUALITIES) {
+        const request: ImageEncodingRequest = { mimeType: "image/jpeg", scale, quality };
+        const blob = quality === floorQuality ? floor : await encode(request);
+        const attempt: BudgetedImage = { ...request, blob };
+        if (blob.size < best.blob.size) best = attempt;
+        if (blob.size <= maxBytes) return attempt;
+      }
     }
 
     if (scale <= minimumScale) break;

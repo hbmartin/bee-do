@@ -304,7 +304,12 @@ describe("Worker routing and validation", () => {
     expect(await response.json()).toMatchObject({
       ok: false,
       captureId: CAPTURE_ID,
-      error: { code: "INVALID_CAPTURE", stage: "validation", retryable: false },
+      error: {
+        code: "INVALID_CAPTURE",
+        stage: "validation",
+        message: "Capture payload failed validation at page.url",
+        retryable: false,
+      },
     });
   });
 

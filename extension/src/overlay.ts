@@ -423,11 +423,9 @@ class CaptureOverlay {
   private onKeydown = (event: KeyboardEvent): void => {
     const target = event.composedPath()[0];
     const typing =
-      target instanceof Node &&
-      this.shadow.contains(target) &&
-      (target instanceof HTMLTextAreaElement ||
-        target instanceof HTMLInputElement ||
-        (target instanceof HTMLElement && target.isContentEditable));
+      target instanceof HTMLTextAreaElement ||
+      target instanceof HTMLInputElement ||
+      (target instanceof HTMLElement && target.isContentEditable);
 
     if (event.key === "Escape") {
       if (target === this.labelEditor) {
@@ -561,10 +559,14 @@ class CaptureOverlay {
     };
 
     const result = await fitImageToBudget(canvas.width, encode);
+    const mimeType = result.blob.type;
+    if (mimeType !== "image/png" && mimeType !== "image/jpeg") {
+      throw new Error("This browser encoded the screenshot in an unsupported format.");
+    }
     return {
       dataUrl: await blobDataUrl(result.blob),
       metadata: {
-        mimeType: result.mimeType,
+        mimeType,
         byteLength: result.blob.size,
         annotated: this.actions.length > 0,
         ...(result.scale < 1 ? { scale: result.scale } : {}),
