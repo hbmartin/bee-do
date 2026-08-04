@@ -1,20 +1,12 @@
 {
+  // The Worker and its tests run in workerd. Runtime globals come from worker-configuration.d.ts,
+  // so DOM is deliberately absent: anything that needs a browser belongs to extension/tsconfig.json.
+  // Tests import the DOM-free extension modules, which are checked here in their workerd context
+  // and again under extension/tsconfig.json in their browser context.
+  "extends": "./tsconfig.base.json",
   "compilerOptions": {
-    "allowJs": false,
-    "exactOptionalPropertyTypes": true,
-    "forceConsistentCasingInFileNames": true,
-    "lib": ["ES2023", "DOM", "DOM.Iterable"],
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
-    "noEmit": true,
-    "noFallthroughCasesInSwitch": true,
-    "noImplicitOverride": true,
-    "noUncheckedIndexedAccess": true,
-    "resolveJsonModule": true,
-    "skipLibCheck": true,
-    "strict": true,
-    "target": "ES2022",
-    "types": ["chrome", "@cloudflare/vitest-pool-workers/types", "./worker-configuration.d.ts"]
+    "lib": ["ES2023"],
+    "types": ["@cloudflare/vitest-pool-workers/types", "./worker-configuration.d.ts"]
   },
   "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
 }

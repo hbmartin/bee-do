@@ -1,0 +1,11 @@
+{
+  // The extension runs in Chrome, so it is checked against DOM globals and `chrome`. It must not
+  // see worker-configuration.d.ts: workerd redeclares Blob, fetch, and friends with laxer types,
+  // which silently hides real browser type errors.
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["chrome"]
+  },
+  "include": ["src/**/*.ts", "../src/shared/**/*.ts"]
+}

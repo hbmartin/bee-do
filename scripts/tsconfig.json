@@ -1,0 +1,14 @@
+{
+  // The build script is plain ESM JavaScript running under Node, so it needs allowJs/checkJs to be
+  // checked at all. It is isolated here because Node globals belong to neither other project.
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"]
+  },
+  "include": ["**/*.mjs"]
+}
