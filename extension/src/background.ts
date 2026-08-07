@@ -38,7 +38,7 @@ void lockStorage();
 async function getSettings(): Promise<Settings> {
   return {
     ...SETTINGS_DEFAULTS,
-    ...(await chrome.storage.local.get(SETTINGS_DEFAULTS)),
+    ...(await chrome.storage.local.get<Partial<Settings>>(SETTINGS_DEFAULTS)),
   };
 }
 
@@ -51,7 +51,9 @@ function sendToTab<T>(tabId: number, message: unknown): Promise<T | undefined> {
   });
 }
 
-function decodeImageDataUrl(dataUrl: string, expectedMimeType: string): Uint8Array {
+// The returned view must be backed by a plain ArrayBuffer, not a SharedArrayBuffer, or it cannot
+// be used as a BlobPart when the multipart body is assembled.
+function decodeImageDataUrl(dataUrl: string, expectedMimeType: string): Uint8Array<ArrayBuffer> {
   const match = /^data:(image\/(?:png|jpeg));base64,([A-Za-z0-9+/]+={0,2})$/.exec(dataUrl);
   if (!match || match[1] !== expectedMimeType) {
     throw new Error("The rendered image does not match its Capture metadata.");
